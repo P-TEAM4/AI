@@ -19,7 +19,9 @@ from src.utils.visualizer import GapAnalysisVisualizer
 def main():
     """Main function to test real Riot API"""
 
-    print("🎮 Riot API Real Data Test\n")
+    print("🎮 LoL Match Analysis with Baseline Comparison\n")
+    print("=" * 60)
+    print("📌 This test analyzes a single match against learned baseline data")
     print("=" * 60)
 
     # Get API key from environment
@@ -55,29 +57,29 @@ def main():
 
         puuid = account['puuid']
 
-        # Test 2: Get recent matches
+        # Test 2: Get most recent match
         print("\n" + "=" * 60)
-        print("Test 2: Getting Recent Matches")
+        print("Test 2: Getting Most Recent Match")
         print("=" * 60)
 
-        print(f"🔍 Fetching recent matches...")
-        match_ids = riot_client.get_match_ids(puuid, count=5)
+        print(f"🔍 Fetching most recent match...")
+        match_ids = riot_client.get_match_ids(puuid, count=1)
 
         if not match_ids:
             print("❌ No matches found")
             return
 
-        print(f"✅ Found {len(match_ids)} recent matches:")
-        for i, match_id in enumerate(match_ids, 1):
-            print(f"   {i}. {match_id}")
+        print(f"✅ Found most recent match:")
+        print(f"   {match_ids[0]}")
 
-        # Test 3: Analyze a match
+        # Test 3: Analyze the match (단일 경기 분석)
         print("\n" + "=" * 60)
-        print("Test 3: Analyzing Most Recent Match")
+        print("Test 3: Analyzing Match with Learned Baseline Data")
         print("=" * 60)
 
         latest_match_id = match_ids[0]
         print(f"🔍 Analyzing match: {latest_match_id}")
+        print(f"📊 Comparing with tier baseline statistics (learned data)")
 
         match_details = riot_client.get_match_details(latest_match_id)
         player_stats = riot_client.extract_player_stats_from_match(match_details, puuid)
