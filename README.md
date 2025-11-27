@@ -3,10 +3,13 @@
 ## 프로젝트 개요
 League of Legends (LoL) 경기 데이터를 분석하여 자동으로 하이라이트를 생성하고 승패 요인을 분석하는 AI 시스템입니다.
 
+**핵심 분석 방식**: 단일 경기를 학습된 티어별 베이스라인 데이터와 비교하여 플레이어의 강점/약점을 분석합니다.
+
 ## 주요 기능
 - **Rule-based 모델**: 플레이어 스탯과 티어 평균을 비교하여 갭(Gap) 분석
-  - 게임 시간 정규화: 골드/분, 비전 스코어/분으로 공정한 비교
-  - 5가지 지표 분석: KDA, CS/min, Gold/min, Vision/min, Damage Share
+  - **게임 시간 정규화**: 모든 시간 의존 지표를 분당 기준으로 정규화하여 공정한 비교
+  - **5가지 정규화 지표**: KDA, CS/min, Gold/min, Vision/min, Damage Share
+  - **단일 경기 분석**: 5경기 평균이 아닌, 1경기를 학습된 베이스라인과 비교
 - **Riot API 연동**: Match, Timeline, Rank Tier 정보 수집
 - **Spring Boot 연동**: REST API를 통한 백엔드 서버 연동
 - **분석 리포트 생성**: 강점/약점 식별, 개선 추천사항 제공
@@ -132,12 +135,12 @@ Content-Type: application/json
 ## Rule-based 모델 설명
 
 ### Gap 계산 로직
-1. **티어별 표준 모델(Baseline)**: 각 티어의 평균 지표(KDA, CS/min, Gold 등)를 정의
-2. **개인 프로파일링**: 플레이어의 최근 경기 데이터로 개인 평균 계산
+1. **티어별 표준 모델(Baseline)**: 각 티어의 평균 지표를 사전 학습 데이터로 정의
+2. **단일 경기 분석**: 플레이어의 1경기 데이터를 학습된 베이스라인과 비교
 3. **Gap 분석**:
-   - 개인 프로필과 티어별 표준 모델 비교
-   - 정규화된 차이값 계산
-   - 승리/패배 기여도 산출
+   - 경기 스탯을 티어별 표준 모델과 비교
+   - 게임 시간으로 정규화된 차이값 계산 (Gold/min, Vision/min)
+   - 종합 점수 및 강점/약점 도출
 
 ### 티어별 Baseline 데이터 수집
 Rule-based 모델의 정확도를 높이기 위해 실제 데이터를 수집하여 Baseline을 업데이트할 수 있습니다.
@@ -155,16 +158,18 @@ python scripts/collect_tier_baselines.py
 - 대량 데이터 수집 시 시간이 오래 걸릴 수 있음
 - 정기적으로 업데이트하여 메타 변화 반영 (월 1회 권장)
 
-### 분석 지표 (게임 시간 정규화 적용)
-- **KDA** (Kill/Death/Assist Ratio) - 게임별 독립 지표
-- **CS/min** (Creep Score per Minute) - 분당 CS
-- **Gold/min** (Gold per Minute) - ⚠️ **분당 골드로 정규화** (게임 길이 보정)
-- **Vision/min** (Vision Score per Minute) - ⚠️ **분당 비전 스코어로 정규화** (게임 길이 보정)
-- **Damage Share** - 팀 내 딜 비중 (%)
+### 분석 지표 (모든 지표 정규화 완료)
+- **KDA** (Kill/Death/Assist Ratio) - 게임별 독립 지표 (정규화 불필요)
+- **CS/min** (Creep Score per Minute) - ⚠️ **분당 CS로 정규화**
+- **Gold/min** (Gold per Minute) - ⚠️ **분당 골드로 정규화**
+- **Vision/min** (Vision Score per Minute) - ⚠️ **분당 비전 스코어로 정규화**
+- **Damage Share** - 팀 내 딜 비중 (%) - 비율 지표 (정규화 불필요)
 
-**정규화 이유**:
-- 짧은 게임(20분)과 긴 게임(40분)을 공정하게 비교하기 위함
-- 절대값 대신 분당 지표 사용으로 게임 길이 영향 제거
+**정규화 전략**:
+- **시간 의존 지표**: CS, Gold, Vision Score를 게임 시간으로 나눈 분당 값으로 정규화
+- **게임 독립 지표**: KDA는 게임별 독립적 계산 (deaths=0일 경우 kills+assists 반환)
+- **비율 지표**: Damage Share는 팀 내 비중이므로 정규화 불필요
+- **효과**: 20분 게임과 40분 게임을 공정하게 비교 가능
 
 ## Git 브랜치 전략
 - `main`: 프로덕션 배포 브랜치 (deploy)
@@ -178,10 +183,17 @@ python scripts/collect_tier_baselines.py
 
 ### 브랜치 작업 흐름
 1. `feature/*`, `fix/*`, `refactor/*` 등의 작업 브랜치에서 개발
-2. 작업 완료 후 `develop` 브랜치로 Pull Request
+2. 작업 완료 후 `develop` 브랜치로 Pull Request 생성
+   - PR 생성 시 `.github/pull_request_template.md` 템플릿이 자동 적용됨
+   - 체크리스트를 확인하고 필요한 정보를 모두 작성
 3. 코드 리뷰 후 `develop`에 머지
 4. `develop`에서 테스트 및 검증 완료 후 `main`으로 머지
 5. `main` 브랜치는 자동으로 프로덕션 배포
+
+### Pull Request 작성 가이드
+- `.github/pull_request_template.md` 템플릿 참고
+- 변경 사항, 테스트 결과, Breaking Changes 등을 명확히 기술
+- 모든 체크리스트 항목을 확인하고 표시
 
 ## 테스트
 
@@ -199,12 +211,16 @@ pytest -m evaluation    # 모델 평가 테스트
 pytest --cov=src --cov-report=html
 ```
 
-### 실제 API 테스트
+### 실제 API 테스트 (단일 경기 분석)
 ```bash
-# Riot API로 실제 데이터 가져와서 테스트
+# Riot API로 실제 데이터 가져와서 단일 경기를 베이스라인과 비교
 python scripts/test_real_api.py
 
-# 결과: 계정 조회, 매치 분석, Gap 분석, 시각화 생성
+# 결과:
+# - 계정 조회
+# - 최근 1경기 가져오기
+# - 경기 데이터를 학습된 티어 베이스라인과 비교
+# - Gap 분석 및 시각화 생성
 ```
 
 ## 시각화 (개발/테스트용)
@@ -225,12 +241,16 @@ python scripts/visualize_example.py
 
 **주의**: 시각화는 테스트/개발 목적으로만 사용됩니다. API 엔드포인트로는 제공되지 않습니다.
 
-## 베이스라인 데이터
+## 베이스라인 데이터 (학습된 데이터)
 
 현재 `src/config/settings.py`의 티어별 베이스라인 데이터는:
-- **임시 추정값**: 롤 통계 사이트 기반 추정
-- **실제 수집 필요**: `scripts/collect_tier_baselines.py` 실행하여 실제 데이터 수집 권장
-- **정규화 적용**: Gold/min, Vision/min으로 게임 시간 보정
+- **임시 추정값**: 롤 통계 사이트 기반 추정 (실제 학습 데이터로 교체 필요)
+- **정규화 완료**: 모든 시간 의존 지표를 분당 기준으로 정규화
+  - `avg_cs_per_min`: 분당 CS
+  - `avg_gold_per_min`: 분당 골드
+  - `avg_vision_score_per_min`: 분당 비전 스코어
+- **실제 수집 권장**: `scripts/collect_tier_baselines.py` 실행하여 실제 데이터 수집 후 업데이트
+- **단일 경기 비교**: 이 베이스라인 데이터와 1경기의 플레이어 스탯을 비교
 
 ## 개발 팀
 - **AI 개발**: 송재곤, 김문기
