@@ -160,9 +160,9 @@ python scripts/collect_tier_baselines.py
 
 ### 분석 지표 (모든 지표 정규화 완료)
 - **KDA** (Kill/Death/Assist Ratio) - 게임별 독립 지표 (정규화 불필요)
-- **CS/min** (Creep Score per Minute) - ⚠️ **분당 CS로 정규화**
-- **Gold/min** (Gold per Minute) - ⚠️ **분당 골드로 정규화**
-- **Vision/min** (Vision Score per Minute) - ⚠️ **분당 비전 스코어로 정규화**
+- **CS/min** (Creep Score per Minute) - **분당 CS로 정규화**
+- **Gold/min** (Gold per Minute) - **분당 골드로 정규화**
+- **Vision/min** (Vision Score per Minute) - **분당 비전 스코어로 정규화**
 - **Damage Share** - 팀 내 딜 비중 (%) - 비율 지표 (정규화 불필요)
 
 **정규화 전략**:
