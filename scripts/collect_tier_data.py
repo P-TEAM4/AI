@@ -1,7 +1,7 @@
 """
 티어별 매치 데이터 수집 스크립트
 
-Riot API를 통해 티어별로 10,000개씩 매치 데이터를 수집합니다.
+Riot API를 통해 티어별로  매치 데이터를 수집합니다.
 Rate Limit을 준수하며 안전하게 데이터를 수집하고 저장합니다.
 
 사용법:
@@ -15,6 +15,7 @@ import json
 from typing import Dict, List, Optional
 from datetime import datetime
 import random
+import requests
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -22,7 +23,9 @@ from src.services.riot_api import RiotAPIClient
 from dotenv import load_dotenv
 import os
 
-load_dotenv()
+# .env 파일을 프로젝트 루트에서 로드
+project_root = Path(__file__).parent.parent
+load_dotenv(project_root / ".env")
 
 
 class TierDataCollector:
@@ -45,12 +48,20 @@ class TierDataCollector:
         self.progress_dir = Path("data/collection_progress")
         self.progress_dir.mkdir(parents=True, exist_ok=True)
 
-        # Rate Limit 설정 (개발용 API Key 기준)
-        self.requests_per_second = 20
-        self.requests_per_2min = 100
-        self.request_interval = 1.0 / self.requests_per_second  # 0.05초
-        self.request_count_2min = 0
-        self.last_2min_reset = time.time()
+        # Rate Limit 설정 (개발용 API Key 기준 - 안정적 설정)
+        self.requests_per_second = 10  # 초당 10개 (20개 중 50%)
+        self.requests_per_2min = 90    # 2분당 90개 (100개 중 90%)
+        self.request_interval = 0.6    # 0.6초 간격 (분당 100개 = 2분당 200개이지만 90개 제한)
+
+        # 2분 슬라이딩 윈도우를 위한 타임스탬프 큐
+        self.request_timestamps = []
+
+        # 429 에러 발생 시 재시도 설정
+        self.max_retries = 3
+        self.retry_delay = 5  # 5초 대기 후 재시도
+
+        # 401 에러 플래그 (API 키 만료)
+        self.api_key_expired = False
 
         # Session 생성
         import requests
@@ -87,25 +98,36 @@ class TierDataCollector:
             return "unknown"
 
     def wait_for_rate_limit(self):
-        """Rate Limit 대기"""
-        # 2분당 요청 수 체크
+        """Rate Limit 대기 (슬라이딩 윈도우 방식)"""
         current_time = time.time()
-        if current_time - self.last_2min_reset >= 120:
-            self.request_count_2min = 0
-            self.last_2min_reset = current_time
 
-        # 2분당 100개 제한에 도달하면 대기
-        if self.request_count_2min >= self.requests_per_2min:
-            wait_time = 120 - (current_time - self.last_2min_reset)
+        # 2분(120초) 이전의 타임스탬프 제거
+        self.request_timestamps = [
+            ts for ts in self.request_timestamps if current_time - ts < 120
+        ]
+
+        # 2분 윈도우 내 요청이 제한에 도달했는지 확인
+        if len(self.request_timestamps) >= self.requests_per_2min:
+            # 윈도우가 충분히 비워질 때까지 대기
+            # 가장 오래된 요청부터 순차적으로 만료되도록 대기
+            oldest_request = self.request_timestamps[0]
+            wait_time = 120 - (current_time - oldest_request) + 0.5  # 0.5초 버퍼
+
             if wait_time > 0:
-                print(f"   Rate limit 대기 중... {wait_time:.0f}초")
+                print(f"   Rate limit 대기 중... {wait_time:.1f}초 (2분 윈도우: {len(self.request_timestamps)}/{self.requests_per_2min})")
                 time.sleep(wait_time)
-                self.request_count_2min = 0
-                self.last_2min_reset = time.time()
+
+                # 대기 후 타임스탬프 정리
+                current_time = time.time()
+                self.request_timestamps = [
+                    ts for ts in self.request_timestamps if current_time - ts < 120
+                ]
 
         # 초당 요청 간격 대기
         time.sleep(self.request_interval)
-        self.request_count_2min += 1
+
+        # 현재 요청 타임스탬프 기록
+        self.request_timestamps.append(time.time())
 
     def get_summoners_by_tier(
         self, tier: str, division: str, page: int = 1
@@ -145,6 +167,15 @@ class TierDataCollector:
             else:
                 return data
 
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 401:
+                print(f"\n 401 에러: API 키가 만료되었거나 유효하지 않습니다.")
+                print(f"   Riot Developer Portal에서 새 API 키를 발급받으세요.")
+                self.api_key_expired = True
+                return []
+            else:
+                print(f"   Error fetching summoners: {e}")
+                return []
         except Exception as e:
             print(f"   Error fetching summoners: {e}")
             return []
@@ -153,7 +184,7 @@ class TierDataCollector:
         self, puuid: str, count: int = 20, start: int = 0
     ) -> List[str]:
         """
-        PUUID로 매치 ID 목록 조회
+        PUUID로 매치 ID 목록 조회 (429 에러 재시도 포함)
 
         Args:
             puuid: 플레이어 PUUID
@@ -163,24 +194,40 @@ class TierDataCollector:
         Returns:
             매치 ID 목록
         """
-        self.wait_for_rate_limit()
+        for attempt in range(self.max_retries):
+            self.wait_for_rate_limit()
 
-        try:
-            url = f"https://asia.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids"
-            params = {"start": start, "count": min(count, 100), "queue": 420}  # 솔로랭크만
+            try:
+                url = f"https://asia.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids"
+                params = {"start": start, "count": min(count, 100), "queue": 420}  # 솔로랭크만
 
-            response = self.session.get(url, params=params)
-            response.raise_for_status()
+                response = self.session.get(url, params=params)
+                response.raise_for_status()
+                match_ids = response.json()
+                return match_ids
 
-            return response.json()
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 429:
+                    retry_after = int(e.response.headers.get('Retry-After', 120))
+                    print(f"   429 에러: {retry_after}초 대기 후 재시도...")
+                    time.sleep(retry_after)
+                    continue
+                elif e.response.status_code == 401:
+                    print(f"\n 401 에러: API 키가 만료되었거나 유효하지 않습니다.")
+                    self.api_key_expired = True
+                    return []
+                else:
+                    print(f"   Error fetching match IDs: {e}")
+                    return []
+            except Exception as e:
+                print(f"   Error fetching match IDs: {e}")
+                return []
 
-        except Exception as e:
-            print(f"   Error fetching match IDs: {e}")
-            return []
+        return []
 
     def get_match_detail(self, match_id: str) -> Optional[Dict]:
         """
-        매치 상세 정보 조회
+        매치 상세 정보 조회 (429 에러 재시도 포함)
 
         Args:
             match_id: 매치 ID
@@ -188,19 +235,36 @@ class TierDataCollector:
         Returns:
             매치 상세 정보
         """
-        self.wait_for_rate_limit()
+        for attempt in range(self.max_retries):
+            self.wait_for_rate_limit()
 
-        try:
-            url = f"https://asia.api.riotgames.com/lol/match/v5/matches/{match_id}"
+            try:
+                url = f"https://asia.api.riotgames.com/lol/match/v5/matches/{match_id}"
+                response = self.session.get(url)
+                response.raise_for_status()
+                match_data = response.json()
+                return match_data
 
-            response = self.session.get(url)
-            response.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 429:
+                    # Rate limit 초과 - 대기 후 재시도
+                    retry_after = int(e.response.headers.get('Retry-After', 120))
+                    print(f"   429 에러: {retry_after}초 대기 후 재시도... (시도 {attempt + 1}/{self.max_retries})")
+                    time.sleep(retry_after)
+                    continue
+                elif e.response.status_code == 401:
+                    print(f"\n[ERROR] 401 에러: API 키가 만료되었거나 유효하지 않습니다.")
+                    self.api_key_expired = True
+                    return None
+                else:
+                    print(f"   Error fetching match detail: {e}")
+                    return None
+            except Exception as e:
+                print(f"   Error fetching match detail: {e}")
+                return None
 
-            return response.json()
-
-        except Exception as e:
-            print(f"   Error fetching match detail: {e}")
-            return None
+        print(f"   매치 {match_id} 조회 실패: 최대 재시도 횟수 초과")
+        return None
 
     def extract_player_data(self, match_data: Dict) -> List[Dict]:
         """
@@ -355,15 +419,15 @@ class TierDataCollector:
             progress_file.unlink()
 
     def collect_tier_data(
-        self, tier: str, target_count: int = 10000, matches_per_summoner: int = 5, resume: bool = True
+        self, tier: str, target_matches: int = 3000, matches_per_summoner: int = 10, resume: bool = True
     ) -> List[Dict]:
         """
         특정 티어의 매치 데이터 수집
 
         Args:
             tier: 티어 (IRON, BRONZE, SILVER, GOLD, PLATINUM, EMERALD, DIAMOND, MASTER, GRANDMASTER, CHALLENGER)
-            target_count: 목표 매치 수
-            matches_per_summoner: 소환사당 수집할 매치 수 (기본값: 5)
+            target_matches: 목표 매치 수 (기본값: 3000개)
+            matches_per_summoner: 소환사당 수집할 매치 수 (기본값: 10)
             resume: 이전 진행 상황에서 이어서 수집할지 여부 (기본값: True)
 
         Returns:
@@ -371,7 +435,7 @@ class TierDataCollector:
         """
         print(f"\n{'='*80}")
         print(f"{tier} 티어 데이터 수집 시작")
-        print(f"목표: {target_count:,} 매치 (소환사당 {matches_per_summoner}경기)")
+        print(f"목표: {target_matches:,}개 매치 (소환사당 {matches_per_summoner}경기)")
         print(f"{'='*80}")
 
         tier_upper = tier.upper()
@@ -380,12 +444,10 @@ class TierDataCollector:
         if resume:
             collected_match_ids, all_players_data = self.load_progress(tier_upper)
             if collected_match_ids:
-                print(f"   이어서 수집 시작: 현재 {len(collected_match_ids)}/{target_count} 매치")
+                print(f"   이어서 수집 시작: 현재 {len(collected_match_ids)}/{target_matches} 매치")
         else:
             collected_match_ids = set()
             all_players_data = []
-
-        summoner_count = 0  # 수집한 소환사 수
 
         # 디비전 목록 (MASTER 이상은 디비전 없음)
         if tier_upper in ["MASTER", "GRANDMASTER", "CHALLENGER"]:
@@ -394,17 +456,36 @@ class TierDataCollector:
             divisions = ["I", "II", "III", "IV"]
 
         start_time = time.time()
+        summoner_count = 0  # 수집한 소환사 수 (통계용)
 
         for division in divisions:
-            if len(collected_match_ids) >= target_count:
+            if len(collected_match_ids) >= target_matches:  # 매치 수 기준
                 break
 
             division_str = division if division else ""
             print(f"\n[{tier_upper} {division_str}] 소환사 목록 조회 중...")
 
-            # 소환사 목록 조회 (여러 페이지)
+            # 소환사 목록 조회 (필요한 만큼만)
             summoners = []
-            for page in range(1, 11):  # 최대 10페이지
+            remaining_matches = target_matches - len(collected_match_ids)
+            needed_summoners = (remaining_matches // matches_per_summoner) * 2  # 여유있게 2배
+
+            # 한 페이지당 약 205명이므로 필요한 페이지 수 계산
+            pages_needed = (needed_summoners // 205) + 1
+            max_pages = min(pages_needed, 5)  # 최대 5페이지
+
+            for page in range(1, max_pages + 1):
+                if len(collected_match_ids) >= target_matches:
+                    break
+
+                # 401 에러 체크
+                if self.api_key_expired:
+                    print(f"\n[SAVE] 진행 상황 저장 중...")
+                    self.save_progress(tier_upper, collected_match_ids, all_players_data)
+                    print(f"   저장 완료: {len(collected_match_ids)}개 매치")
+                    print(f"\n[INFO] API 키를 갱신한 후 다시 실행하면 이어서 수집됩니다.")
+                    return all_players_data
+
                 page_summoners = self.get_summoners_by_tier(tier_upper, division or "I", page)
                 if not page_summoners:
                     break
@@ -420,8 +501,16 @@ class TierDataCollector:
             random.shuffle(summoners)  # 랜덤하게 섞어서 다양성 확보
 
             for idx, summoner in enumerate(summoners):
-                if len(collected_match_ids) >= target_count:
+                if len(collected_match_ids) >= target_matches:  # 매치 수 기준
                     break
+
+                # 401 에러 체크
+                if self.api_key_expired:
+                    print(f"\n[SAVE] 진행 상황 저장 중...")
+                    self.save_progress(tier_upper, collected_match_ids, all_players_data)
+                    print(f"   저장 완료: {len(collected_match_ids)}개 매치")
+                    print(f"\n[INFO] API 키를 갱신한 후 다시 실행하면 이어서 수집됩니다.")
+                    return all_players_data
 
                 summoner_id = summoner.get("summonerId")
                 puuid = summoner.get("puuid")
@@ -432,14 +521,15 @@ class TierDataCollector:
                 # 매치 ID 조회 (소환사당 지정된 개수만큼만)
                 match_ids = self.get_match_ids_by_puuid(puuid, count=matches_per_summoner)
 
+                if not match_ids:
+                    continue
+
                 summoner_match_count = 0  # 이 소환사에게서 수집한 매치 수
+                new_matches_this_summoner = 0  # 이 소환사에게서 새로 수집한 매치 수
 
                 for match_id in match_ids:
                     if match_id in collected_match_ids:
                         continue
-
-                    if len(collected_match_ids) >= target_count:
-                        break
 
                     # 매치 상세 정보 조회
                     match_data = self.get_match_detail(match_id)
@@ -456,27 +546,34 @@ class TierDataCollector:
                     all_players_data.extend(players_data)
                     collected_match_ids.add(match_id)
                     summoner_match_count += 1
+                    new_matches_this_summoner += 1
 
-                    # 100개마다 진행 상황 저장
-                    if len(collected_match_ids) % 100 == 0:
+                # 소환사 처리 완료 표시 (매 10명마다 요약)
+                if (idx + 1) % 10 == 0:
+                    elapsed = time.time() - start_time
+                    rate = len(collected_match_ids) / elapsed if elapsed > 0 else 0
+                    print(f"   [진행] 소환사: {idx + 1}/{len(summoners)} | 매치: {len(collected_match_ids)}/{target_matches} | 속도: {rate:.1f} 매치/초")
+
+                    # 매치 10개마다 진행 상황 저장
+                    if len(collected_match_ids) % 10 == 0:
                         self.save_progress(tier_upper, collected_match_ids, all_players_data)
 
-                # 이 소환사로부터 매치를 수집했으면 카운트 증가
+                # 이 소환사로부터 매치를 수집했으면 카운트 증가 (통계용)
                 if summoner_match_count > 0:
                     summoner_count += 1
 
-                    # 진행 상황 출력
+                    # 진행 상황 출력 (100매치마다)
                     if len(collected_match_ids) % 100 == 0:
                         elapsed = time.time() - start_time
                         rate = len(collected_match_ids) / elapsed if elapsed > 0 else 0
-                        remaining = target_count - len(collected_match_ids)
+                        remaining = target_matches - len(collected_match_ids)
                         eta = remaining / rate if rate > 0 else 0
 
                         print(
-                            f"   진행: {len(collected_match_ids):,}/{target_count:,} 매치 "
-                            f"({len(collected_match_ids)/target_count*100:.1f}%) | "
-                            f"소환사: {summoner_count:,}명 | "
-                            f"속도: {rate:.1f} 매치/초 | "
+                            f"   진행: {len(collected_match_ids):,}/{target_matches:,} 매치 "
+                            f"({len(collected_match_ids)/target_matches*100:.1f}%) | "
+                            f"유저: {summoner_count:,}명 | "
+                            f"속도: {rate:.2f} 매치/초 | "
                             f"ETA: {eta/60:.0f}분"
                         )
 
@@ -492,6 +589,20 @@ class TierDataCollector:
         self.save_progress(tier_upper, collected_match_ids, all_players_data)
 
         return all_players_data
+
+    def is_tier_already_collected(self, tier: str) -> bool:
+        """
+        해당 티어의 현재 버전 데이터가 이미 수집되었는지 확인
+
+        Args:
+            tier: 티어
+
+        Returns:
+            이미 수집되었으면 True, 아니면 False
+        """
+        base_filename = f"{tier.lower()}_tier_v{self.game_version}.json"
+        filepath = self.data_dir / base_filename
+        return filepath.exists()
 
     def get_next_version_filename(self, tier: str) -> Path:
         """
@@ -549,42 +660,56 @@ class TierDataCollector:
         # 최종 파일 저장 완료 시 진행 상황 파일 삭제
         self.delete_progress(tier)
 
-    def collect_all_tiers(self, matches_per_tier: int = 10000, matches_per_summoner: int = 5):
+    def collect_all_tiers(self, matches_per_tier: int = 3000, matches_per_summoner: int = 10):
         """
         모든 티어의 데이터 수집
 
         Args:
-            matches_per_tier: 티어당 매치 수
-            matches_per_summoner: 소환사당 매치 수 (기본값: 5)
+            matches_per_tier: 티어당 매치 수 (기본값: 3000개)
+            matches_per_summoner: 소환사당 매치 수 (기본값: 10)
         """
-        tiers = [
-            "IRON",
-            "BRONZE",
-            "SILVER",
-            "GOLD",
-            "PLATINUM",
-            "EMERALD",
-            "DIAMOND",
-            "MASTER",
-            "GRANDMASTER",
-            "CHALLENGER",
-        ]
+        # 티어별 목표 매치 수 (인구 고려)
+        tier_targets = {
+            "IRON": matches_per_tier,
+            "BRONZE": matches_per_tier,
+            "SILVER": matches_per_tier,
+            "GOLD": matches_per_tier,
+            "PLATINUM": matches_per_tier,
+            "EMERALD": matches_per_tier,
+            "DIAMOND": matches_per_tier,
+            "MASTER": min(matches_per_tier, 2000),      # 고티어는 인구가 적음
+            "GRANDMASTER": min(matches_per_tier, 1000), # 더 적음
+            "CHALLENGER": min(matches_per_tier, 500),   # 가장 적음
+        }
 
         print("="*80)
         print("티어별 매치 데이터 수집 시작")
         print("="*80)
-        print(f"티어당 목표: {matches_per_tier:,} 매치")
-        print(f"소환사당 매치 수: {matches_per_summoner}경기")
-        print(f"예상 소환사 수: 약 {matches_per_tier // matches_per_summoner * 2:,}명/티어 (중복 고려)")
-        print(f"총 목표: {matches_per_tier * len(tiers):,} 매치")
-        print(f"예상 소요 시간: 수 시간 ~ 1일")
+        print(f"기본 목표: {matches_per_tier:,}개 매치/티어")
+        print(f"고티어 조정: Master {tier_targets['MASTER']:,}, GM {tier_targets['GRANDMASTER']:,}, Challenger {tier_targets['CHALLENGER']:,}")
+        total_matches = sum(tier_targets.values())
+        print(f"총 목표: {total_matches:,}개 매치")
+        print(f"예상 소요 시간: Rate limit 고려 시 수 시간 ~ 1일")
         print("="*80)
 
         overall_start = time.time()
 
-        for tier in tiers:
+        for tier, target_matches in tier_targets.items():
             try:
-                data = self.collect_tier_data(tier, matches_per_tier, matches_per_summoner)
+                # 이미 수집된 티어인지 확인
+                if self.is_tier_already_collected(tier):
+                    print(f"\n[SKIP] {tier} 티어는 이미 v{self.game_version} 버전 데이터가 수집되어 있습니다. 건너뜁니다.")
+                    continue
+
+                data = self.collect_tier_data(tier, target_matches, matches_per_summoner)
+
+                # 401 에러로 중단되었는지 확인
+                if self.api_key_expired:
+                    print(f"\n\n[WARN] API 키 만료로 수집 중단됨")
+                    print(f"   현재까지 수집된 데이터는 진행 상황 파일에 저장되었습니다.")
+                    print(f"   .env 파일에서 RIOT_API_KEY를 갱신한 후 다시 실행하세요.")
+                    break
+
                 self.save_tier_data(tier, data)
 
             except KeyboardInterrupt:
@@ -616,10 +741,11 @@ def main():
     collector = TierDataCollector(api_key, region="kr")
 
     # 티어별 데이터 수집
-    # - matches_per_tier: 티어당 수집할 매치 수 (예: 10000)
-    # - matches_per_summoner: 소환사 1명당 수집할 경기 수 (예: 5)
-    # - 목표: 2000명 x 5경기 = 10,000 매치/티어 (중복 제거 후 실제로는 더 적을 수 있음)
-    collector.collect_all_tiers(matches_per_tier=10000, matches_per_summoner=5)
+    # - matches_per_tier: 티어당 수집할 매치 수 (예: 3000개)
+    # - matches_per_summoner: 소환사 1명당 수집할 경기 수 (예: 10)
+    # - 매치 ID로 중복 자동 제거
+    # - 고티어는 자동으로 인구 고려하여 조정됨 (Master: 2000개, GM: 1000개, Challenger: 500개)
+    collector.collect_all_tiers(matches_per_tier=3000, matches_per_summoner=10)
 
 
 if __name__ == "__main__":

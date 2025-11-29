@@ -116,7 +116,7 @@ class LeagueDataPreprocessor:
             ),
             axis=1,
         )
-        print("   ✓ KDA calculated")
+        print("   [OK] KDA calculated")
 
         # 2. 게임 시간 (분 단위)
         df["game_minutes"] = df["game_duration"] / 60
@@ -127,10 +127,10 @@ class LeagueDataPreprocessor:
                 df["totalMinionsKilled"] + df["neutralMinionsKilled"]
             )
             df["cs_per_min"] = df["total_cs"] / df["game_minutes"]
-            print("   ✓ CS/min calculated from raw data")
+            print("   [OK] CS/min calculated from raw data")
         elif "cs_per_min" in df.columns:
             # 이미 계산된 경우
-            print("   ✓ CS/min already exists")
+            print("   [OK] CS/min already exists")
         else:
             # CS 데이터가 없으면 0으로 설정 (경고)
             print("   CS data not found, setting to 0")
@@ -138,11 +138,11 @@ class LeagueDataPreprocessor:
 
         # 4. Gold/min 계산
         df["gold_per_min"] = df["gold_earned"] / df["game_minutes"]
-        print("   ✓ Gold/min calculated")
+        print("   [OK] Gold/min calculated")
 
         # 5. Vision/min 계산
         df["vision_score_per_min"] = df["vision_score"] / df["game_minutes"]
-        print("   ✓ Vision/min calculated")
+        print("   [OK] Vision/min calculated")
 
         # 6. Damage Share 계산 (팀 내 비중)
         # game_id와 team_id로 그룹화하여 팀 전체 데미지 계산
@@ -154,7 +154,7 @@ class LeagueDataPreprocessor:
 
             # Damage Share 계산 (0으로 나누기 방지)
             df["damage_share"] = df["total_damage_dealt_to_champions"] / team_damage.replace(0, 1)
-            print("   ✓ Damage share calculated")
+            print("   [OK] Damage share calculated")
         else:
             # 게임/팀 정보가 없으면 평균값으로 설정
             print("   Game/Team info not found, using default damage share")

@@ -1,11 +1,17 @@
 """
 Train Tier Baselines from Downloaded Match Data
 
-Step 1: Use this script to train baselines from local data
-Step 2: After deployment, use collect_tier_baselines.py for live updates
+티어별 평균 통계(Baseline)를 계산하는 스크립트입니다.
+collect_tier_data.py로 수집한 데이터를 사용합니다.
 
 Usage:
-    python scripts/train_baselines.py --input data/raw_matches.json
+    # 단일 파일에서 학습
+    python scripts/train_baselines.py --input data/tier_collections/gold_tier_v15.23.json
+
+    # 티어별 수집 데이터에서 자동으로 학습 (추천)
+    python scripts/train_baselines.py --auto
+
+    # CSV 파일에서 학습
     python scripts/train_baselines.py --input data/raw_matches.csv
 """
 
@@ -93,14 +99,56 @@ def validate_data(df: pd.DataFrame) -> bool:
     return True
 
 
+def load_tier_collections_auto() -> pd.DataFrame:
+    """
+    data/tier_collections/ 디렉토리에서 모든 티어 데이터 자동 로드
+
+    Returns:
+        모든 티어 데이터가 합쳐진 DataFrame
+    """
+    collections_dir = Path("data/tier_collections")
+
+    if not collections_dir.exists():
+        raise FileNotFoundError(f"Collections directory not found: {collections_dir}")
+
+    # 모든 티어 파일 찾기
+    tier_files = list(collections_dir.glob("*_tier_*.json"))
+
+    if not tier_files:
+        raise FileNotFoundError(f"No tier data files found in {collections_dir}")
+
+    print(f"Found {len(tier_files)} tier data files")
+
+    all_data = []
+
+    for tier_file in tier_files:
+        print(f"Loading: {tier_file.name}")
+
+        with open(tier_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # data 필드에서 플레이어 데이터 추출
+        players_data = data.get("data", [])
+        all_data.extend(players_data)
+
+        print(f"  → Loaded {len(players_data)} player records")
+
+    print(f"\nTotal records loaded: {len(all_data)}")
+    return pd.DataFrame(all_data)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train tier baselines from match data")
     parser.add_argument(
         "--input",
         "-i",
         type=str,
-        required=True,
         help="Input data file (.json, .csv, .parquet)",
+    )
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Auto-load all tier data from data/tier_collections/",
     )
     parser.add_argument(
         "--output",
@@ -117,13 +165,22 @@ def main():
 
     args = parser.parse_args()
 
+    # --input과 --auto 둘 다 없으면 에러
+    if not args.input and not args.auto:
+        parser.error("Either --input or --auto must be specified")
+
     try:
         print("=" * 80)
         print("TIER BASELINE TRAINING")
         print("=" * 80)
 
         # Load data
-        df = load_data_from_file(args.input)
+        if args.auto:
+            print("\n[AUTO] Auto-loading tier data from data/tier_collections/\n")
+            df = load_tier_collections_auto()
+        else:
+            print(f"\n[LOAD] Loading data from {args.input}\n")
+            df = load_data_from_file(args.input)
 
         # Validate data
         validate_data(df)
@@ -132,7 +189,7 @@ def main():
         trainer = BaselineTrainer()
 
         # Train baselines
-        print("\n🔄 Training baselines...")
+        print("\n[TRAIN] Training baselines...")
         baselines = trainer.train_from_data(df)
 
         # Display results

@@ -270,7 +270,7 @@ class GapAnalysisVisualizer:
         weaknesses = gap_result.get('weaknesses', [])[:5]
 
         y_pos = 0.9
-        ax3.text(0.05, y_pos, '💪 Strengths:', fontsize=14, fontweight='bold', color='#4ECDC4')
+        ax3.text(0.05, y_pos, 'Strengths:', fontsize=14, fontweight='bold', color='#4ECDC4')
         y_pos -= 0.1
 
         for i, strength in enumerate(strengths, 1):
@@ -278,7 +278,7 @@ class GapAnalysisVisualizer:
             y_pos -= 0.08
 
         y_pos -= 0.05
-        ax3.text(0.05, y_pos, '⚠️ Weaknesses:', fontsize=14, fontweight='bold', color='#FF6B6B')
+        ax3.text(0.05, y_pos, 'Weaknesses:', fontsize=14, fontweight='bold', color='#FF6B6B')
         y_pos -= 0.1
 
         for i, weakness in enumerate(weaknesses, 1):
@@ -296,7 +296,7 @@ class GapAnalysisVisualizer:
         recommendations = gap_result.get('recommendations', [])[:6]
 
         y_pos = 0.9
-        ax4.text(0.05, y_pos, '📋 Recommendations:', fontsize=14, fontweight='bold', color='#6C5CE7')
+        ax4.text(0.05, y_pos, 'Recommendations:', fontsize=14, fontweight='bold', color='#6C5CE7')
         y_pos -= 0.1
 
         for i, rec in enumerate(recommendations, 1):
