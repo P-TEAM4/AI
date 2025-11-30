@@ -14,7 +14,7 @@ from src.api.models import PlayerStats
 def main():
     """Main function to demonstrate visualizations"""
 
-    print("🎨 LOL Gap Analysis Visualization Demo\n")
+    print("LOL Gap Analysis Visualization Demo\n")
 
     # Initialize analyzer and visualizer
     analyzer = RuleBasedGapAnalyzer()
@@ -50,7 +50,7 @@ def main():
 
     # 1. Comprehensive overview
     overview_path = visualizer.plot_performance_overview(result.dict())
-    print(f"✅ Performance Overview: {overview_path}")
+    print(f"Performance Overview: {overview_path}")
 
     # 2. Radar chart
     player_dict = {
@@ -62,11 +62,11 @@ def main():
     }
     baseline = analyzer.get_tier_baseline("GOLD")
     radar_path = visualizer.plot_radar_chart(player_dict, baseline, "GOLD")
-    print(f"✅ Radar Chart: {radar_path}")
+    print(f"Radar Chart: {radar_path}")
 
     # 3. Gap bars
     gap_path = visualizer.plot_gap_bars(result.normalized_gaps, "GOLD")
-    print(f"✅ Gap Bars: {gap_path}")
+    print(f"Gap Bars: {gap_path}")
 
     # 4. Tier comparison
     all_comparisons = analyzer.compare_with_multiple_tiers(high_performer)
@@ -75,7 +75,7 @@ def main():
         for tier, analysis in all_comparisons.items()
     ]
     tier_comp_path = visualizer.plot_tier_comparison(player_dict, tier_suggestions)
-    print(f"✅ Tier Comparison: {tier_comp_path}\n")
+    print(f"Tier Comparison: {tier_comp_path}\n")
 
     # Example 2: Below-tier performance (Bronze stats in Diamond tier)
     print("=" * 60)
@@ -105,7 +105,7 @@ def main():
     # Generate overview
     print("Generating visualization...")
     overview_path2 = visualizer.plot_performance_overview(result2.dict())
-    print(f"✅ Performance Overview: {overview_path2}\n")
+    print(f"Performance Overview: {overview_path2}\n")
 
     # Example 3: Perfect tier match (Gold stats in Gold tier)
     print("=" * 60)
@@ -137,11 +137,11 @@ def main():
     # Generate overview
     print("Generating visualization...")
     overview_path3 = visualizer.plot_performance_overview(result3.dict())
-    print(f"✅ Performance Overview: {overview_path3}\n")
+    print(f"Performance Overview: {overview_path3}\n")
 
     print("=" * 60)
-    print("✨ All visualizations generated successfully!")
-    print(f"📁 Check the 'visualization_results' directory")
+    print("All visualizations generated successfully!")
+    print(f"Check the 'visualization_results' directory")
     print("=" * 60)
 
 

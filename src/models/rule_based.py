@@ -2,7 +2,7 @@
 
 from typing import Dict, List, Tuple
 import numpy as np
-from src.config.settings import tier_baseline
+from src.config.baseline_loader import get_baseline_loader
 from src.api.models import PlayerStats, GapAnalysisResult
 
 
@@ -10,10 +10,15 @@ class RuleBasedGapAnalyzer:
     """
     Rule-based analyzer for calculating performance gaps between player stats
     and tier baseline averages.
+
+    Uses dynamic baseline loader that can load from:
+    - Trained JSON file (data/tier_baselines.json)
+    - Default hardcoded values (fallback)
     """
 
     def __init__(self):
-        self.tier_baseline = tier_baseline
+        self.baseline_loader = get_baseline_loader()
+        print(f"RuleBasedGapAnalyzer initialized with {'learned' if self.baseline_loader.is_using_learned_baselines() else 'default'} baselines")
 
     def calculate_kda(self, kills: int, deaths: int, assists: int) -> float:
         """
@@ -57,7 +62,7 @@ class RuleBasedGapAnalyzer:
         Returns:
             Dictionary containing baseline statistics
         """
-        return self.tier_baseline.get_baseline(tier)
+        return self.baseline_loader.get_baseline(tier)
 
     def calculate_gaps(
         self, player_stats: Dict[str, float], tier_avg: Dict[str, float]
@@ -270,8 +275,8 @@ class RuleBasedGapAnalyzer:
 
         return GapAnalysisResult(
             tier=tier,
-            player_avg=player_dict,
-            tier_avg=tier_avg,
+            player_stats=player_dict,
+            tier_baseline=tier_avg,
             gaps=gaps,
             normalized_gaps=normalized_gaps,
             overall_score=overall_score,
@@ -293,7 +298,7 @@ class RuleBasedGapAnalyzer:
             Dictionary mapping tier names to gap analysis results
         """
         results = {}
-        for tier in self.tier_baseline.get_all_tiers():
+        for tier in self.baseline_loader.get_all_tiers():
             results[tier] = self.analyze_gap(player_stats, tier)
         return results
 

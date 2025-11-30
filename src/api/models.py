@@ -54,17 +54,17 @@ class ProfileRequest(BaseModel):
 class GapAnalysisRequest(BaseModel):
     """Gap analysis request model"""
 
-    player_stats: PlayerStats
-    tier: str = Field(description="Player tier")
-    division: Optional[str] = Field(default="I", description="Player division")
+    match_id: str = Field(description="Match ID (e.g., KR_1234567890)")
+    puuid: str = Field(description="Player PUUID")
+    tier: str = Field(description="Player tier (e.g., GOLD, PLATINUM)")
 
 
 class GapAnalysisResult(BaseModel):
     """Gap analysis result model"""
 
     tier: str
-    player_avg: Dict[str, float]
-    tier_avg: Dict[str, float]
+    player_stats: Dict[str, float]
+    tier_baseline: Dict[str, float]
     gaps: Dict[str, float]
     normalized_gaps: Dict[str, float]
     overall_score: float

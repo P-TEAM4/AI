@@ -114,24 +114,40 @@ async def analyze_profile(request: ProfileRequest):
 @app.post("/api/v1/analyze/gap", response_model=GapAnalysisResult)
 async def analyze_gap(request: GapAnalysisRequest):
     """
-    Perform gap analysis on player statistics
+    Perform gap analysis on player statistics from a specific match
 
     Args:
-        request: Gap analysis request containing player_stats, tier, division
+        request: Gap analysis request containing match_id and puuid
 
     Returns:
         Gap analysis result with strengths, weaknesses, and recommendations
 
     Raises:
-        HTTPException: If analysis fails
+        HTTPException: If match not found or analysis fails
     """
     try:
+        # Get match details
+        match_data = match_analyzer.riot_client.get_match_details(request.match_id)
+        player_stats_raw = match_analyzer.riot_client.extract_player_stats_from_match(
+            match_data, request.puuid
+        )
+
+        if not player_stats_raw:
+            raise ValueError(f"Player not found in match {request.match_id}")
+
+        # Create PlayerStats object
+        player_stats = match_analyzer.create_player_stats_from_match(player_stats_raw)
+
+        # Perform gap analysis
         result = gap_analyzer.analyze_gap(
-            player_stats=request.player_stats,
+            player_stats=player_stats,
             tier=request.tier,
-            division=request.division or "I",
+            division="I",
         )
         return result
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gap analysis failed: {str(e)}")
 
@@ -156,10 +172,10 @@ async def get_available_tiers():
 @app.post("/api/v1/suggest-tier")
 async def suggest_tier(request: GapAnalysisRequest):
     """
-    Suggest appropriate target tier based on player statistics
+    Suggest appropriate target tier based on player statistics from a match
 
     Args:
-        request: Gap analysis request containing player_stats
+        request: Gap analysis request containing match_id and puuid
 
     Returns:
         Suggested tier and comparison with multiple tiers
@@ -168,14 +184,29 @@ async def suggest_tier(request: GapAnalysisRequest):
         HTTPException: If analysis fails
     """
     try:
-        suggested_tier = gap_analyzer.suggest_target_tier(request.player_stats)
-        all_comparisons = gap_analyzer.compare_with_multiple_tiers(request.player_stats)
+        # Get match details
+        match_data = match_analyzer.riot_client.get_match_details(request.match_id)
+        player_stats_raw = match_analyzer.riot_client.extract_player_stats_from_match(
+            match_data, request.puuid
+        )
+
+        if not player_stats_raw:
+            raise ValueError(f"Player not found in match {request.match_id}")
+
+        # Create PlayerStats object
+        player_stats = match_analyzer.create_player_stats_from_match(player_stats_raw)
+
+        # Suggest tier
+        suggested_tier = gap_analyzer.suggest_target_tier(player_stats)
+        all_comparisons = gap_analyzer.compare_with_multiple_tiers(player_stats)
 
         return {
             "suggested_tier": suggested_tier,
             "current_tier": request.tier,
             "comparisons": {tier: analysis.dict() for tier, analysis in all_comparisons.items()},
         }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Tier suggestion failed: {str(e)}")
 
