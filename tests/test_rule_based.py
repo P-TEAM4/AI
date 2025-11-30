@@ -48,7 +48,8 @@ def test_get_tier_baseline(analyzer):
     gold_baseline = analyzer.get_tier_baseline("GOLD")
     assert "avg_kda" in gold_baseline
     assert "avg_cs_per_min" in gold_baseline
-    assert gold_baseline["avg_kda"] == 2.8
+    assert gold_baseline["avg_kda"] == 3.5
+    assert gold_baseline["avg_cs_per_min"] == 5.61
 
 
 def test_analyze_gap(analyzer, sample_player_stats):
@@ -80,7 +81,7 @@ def test_suggest_target_tier(analyzer, sample_player_stats):
     """Test tier suggestion"""
     suggested_tier = analyzer.suggest_target_tier(sample_player_stats)
 
-    assert suggested_tier in analyzer.tier_baseline.get_all_tiers()
+    assert suggested_tier in analyzer.baseline_loader.get_all_tiers()
 
 
 def test_calculate_overall_score(analyzer):
