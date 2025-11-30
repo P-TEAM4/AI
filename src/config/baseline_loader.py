@@ -7,41 +7,79 @@ Loads tier baselines from:
 3. API updates (future)
 """
 
-from typing import Dict
+from typing import Dict, Optional
 from pathlib import Path
 import json
+import re
 from src.config.settings import TierBaseline as DefaultTierBaseline
 
 
 class DynamicBaselineLoader:
     """동적으로 베이스라인을 로드하는 클래스"""
 
-    def __init__(self, baseline_file: str = "data/tier_baselines.json"):
+    def __init__(self, baseline_file: Optional[str] = None, data_dir: str = "data"):
         """
         Initialize DynamicBaselineLoader
 
         Args:
-            baseline_file: Path to learned baseline JSON file
+            baseline_file: Path to specific baseline JSON file (optional)
+            data_dir: Directory containing baseline files
         """
-        self.baseline_file = Path(baseline_file)
+        self.data_dir = Path(data_dir)
+        self.baseline_file = Path(baseline_file) if baseline_file else None
         self.baselines: Dict[str, Dict[str, float]] = {}
         self.use_learned = False
 
         # Try to load learned baselines
         self._load_baselines()
 
+    def _find_latest_baseline_file(self) -> Optional[Path]:
+        """
+        Find the latest tier_baselines_*.json file in data directory
+
+        Returns:
+            Path to latest baseline file or None
+        """
+        if not self.data_dir.exists():
+            return None
+
+        # Find all tier_baselines_*.json files
+        baseline_files = list(self.data_dir.glob("tier_baselines_*.json"))
+
+        if not baseline_files:
+            return None
+
+        # Extract version numbers and sort
+        def extract_version(filepath: Path) -> tuple:
+            """Extract version number from filename (e.g., tier_baselines_15.23.json -> (15, 23))"""
+            match = re.search(r'tier_baselines_(\d+)\.(\d+)\.json', filepath.name)
+            if match:
+                return (int(match.group(1)), int(match.group(2)))
+            return (0, 0)
+
+        # Sort by version (latest first)
+        baseline_files.sort(key=extract_version, reverse=True)
+        return baseline_files[0]
+
     def _load_baselines(self):
         """Load baselines from JSON file or use defaults"""
-        if self.baseline_file.exists():
+        # If specific file provided, use it
+        if self.baseline_file:
+            target_file = self.baseline_file
+        else:
+            # Otherwise, find latest version automatically
+            target_file = self._find_latest_baseline_file()
+
+        if target_file and target_file.exists():
             try:
-                with open(self.baseline_file, "r", encoding="utf-8") as f:
+                with open(target_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
                 self.baselines = data.get("baselines", {})
                 metadata = data.get("metadata", {})
 
                 self.use_learned = True
-                print(f"Using learned baselines from {self.baseline_file}")
+                print(f"Using learned baselines from {target_file}")
                 print(f"   Trained at: {metadata.get('trained_at', 'Unknown')}")
                 print(f"   Total samples: {metadata.get('total_samples', 0)}")
 
@@ -50,7 +88,7 @@ class DynamicBaselineLoader:
                 print("   Falling back to default baselines")
                 self._use_default_baselines()
         else:
-            print(f"No learned baseline file found at {self.baseline_file}")
+            print(f"No learned baseline file found in {self.data_dir}")
             print("   Using default baselines from settings.py")
             self._use_default_baselines()
 
@@ -72,9 +110,7 @@ class DynamicBaselineLoader:
         tier = tier.upper()
 
         if tier not in self.baselines:
-            # Return GOLD as default
-            print(f"Tier {tier} not found, using GOLD as default")
-            return self.baselines.get("GOLD", DefaultTierBaseline.get_baseline("GOLD"))
+            raise ValueError(f"Tier {tier} not found in baselines. Available tiers: {list(self.baselines.keys())}")
 
         return self.baselines[tier]
 

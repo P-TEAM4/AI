@@ -133,7 +133,6 @@ class BaselineTrainer:
                     round(tier_df["damage_share"].mean(), 3) if "damage_share" in tier_df else 0.0
                 ),
                 "sample_size": len(tier_df),
-                "win_rate": round(tier_df["win"].mean() * 100, 2) if "win" in tier_df else 50.0,
             }
 
             baselines[tier.upper()] = baseline

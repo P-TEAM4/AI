@@ -99,12 +99,12 @@ def validate_data(df: pd.DataFrame) -> bool:
     return True
 
 
-def load_tier_collections_auto() -> pd.DataFrame:
+def load_tier_collections_auto() -> tuple[pd.DataFrame, str]:
     """
     data/tier_collections/ 디렉토리에서 모든 티어 데이터 자동 로드
 
     Returns:
-        모든 티어 데이터가 합쳐진 DataFrame
+        (모든 티어 데이터가 합쳐진 DataFrame, 게임 버전)
     """
     collections_dir = Path("data/tier_collections")
 
@@ -120,12 +120,18 @@ def load_tier_collections_auto() -> pd.DataFrame:
     print(f"Found {len(tier_files)} tier data files")
 
     all_data = []
+    game_version = None
 
     for tier_file in tier_files:
         print(f"Loading: {tier_file.name}")
 
         with open(tier_file, "r", encoding="utf-8") as f:
             data = json.load(f)
+
+        # 첫 번째 파일에서 게임 버전 추출
+        if game_version is None:
+            metadata = data.get("metadata", {})
+            game_version = metadata.get("game_version", "unknown")
 
         # data 필드에서 플레이어 데이터 추출
         players_data = data.get("data", [])
@@ -134,7 +140,8 @@ def load_tier_collections_auto() -> pd.DataFrame:
         print(f"  → Loaded {len(players_data)} player records")
 
     print(f"\nTotal records loaded: {len(all_data)}")
-    return pd.DataFrame(all_data)
+    print(f"Game version: {game_version}")
+    return pd.DataFrame(all_data), game_version
 
 
 def main():
@@ -175,9 +182,10 @@ def main():
         print("=" * 80)
 
         # Load data
+        game_version = None
         if args.auto:
             print("\n[AUTO] Auto-loading tier data from data/tier_collections/\n")
-            df = load_tier_collections_auto()
+            df, game_version = load_tier_collections_auto()
         else:
             print(f"\n[LOAD] Loading data from {args.input}\n")
             df = load_data_from_file(args.input)
@@ -196,9 +204,17 @@ def main():
         if args.display:
             trainer.display_baselines()
 
+        # Determine output filename
+        output_file = args.output
+        if game_version and game_version != "unknown":
+            base_name = Path(output_file).stem
+            ext = Path(output_file).suffix
+            parent = Path(output_file).parent
+            output_file = str(parent / f"{base_name}_{game_version}{ext}")
+
         # Save baselines
-        print(f"\nSaving baselines to {args.output}")
-        trainer.save_baselines(args.output)
+        print(f"\nSaving baselines to {output_file}")
+        trainer.save_baselines(output_file)
 
         # Generate settings.py code
         print("\nGenerated code for settings.py:")
