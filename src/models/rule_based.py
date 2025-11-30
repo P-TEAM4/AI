@@ -275,8 +275,8 @@ class RuleBasedGapAnalyzer:
 
         return GapAnalysisResult(
             tier=tier,
-            player_avg=player_dict,
-            tier_avg=tier_avg,
+            player_stats=player_dict,
+            tier_baseline=tier_avg,
             gaps=gaps,
             normalized_gaps=normalized_gaps,
             overall_score=overall_score,
