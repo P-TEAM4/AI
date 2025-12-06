@@ -278,3 +278,6 @@ docker-compose.override.yml
 # FastAPI
 .pytest_cache/
 visualization_results/
+
+# ML model artifacts
+*.joblib
