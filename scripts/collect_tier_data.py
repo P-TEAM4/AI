@@ -632,30 +632,36 @@ class TierDataCollector:
 
     def save_tier_data(self, tier: str, data: List[Dict]):
         """
-        티어별 데이터 저장 (버전별로 관리)
+        티어별 데이터 저장 (CSV 형식으로 저장)
 
         Args:
             tier: 티어
             data: 플레이어 데이터 리스트
         """
-        filepath = self.get_next_version_filename(tier)
+        import pandas as pd
 
-        output = {
-            "metadata": {
-                "tier": tier.upper(),
-                "game_version": self.game_version,
-                "collected_at": datetime.now().isoformat(),
-                "total_players": len(data),
-                "total_matches": len(set(p["match_id"] for p in data)),
-            },
-            "data": data,
-        }
+        # CSV 파일명 생성
+        base_filename = f"{tier.lower()}_tier_v{self.game_version}.csv"
+        filepath = self.data_dir / base_filename
 
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(output, f, indent=2, ensure_ascii=False)
+        # 파일이 존재하면 -1, -2 추가
+        if filepath.exists():
+            counter = 1
+            while True:
+                filename = f"{tier.lower()}_tier_v{self.game_version}-{counter}.csv"
+                filepath = self.data_dir / filename
+                if not filepath.exists():
+                    break
+                counter += 1
+
+        # DataFrame으로 변환 후 CSV 저장
+        df = pd.DataFrame(data)
+        df.to_csv(filepath, index=False, encoding="utf-8")
 
         print(f"\n데이터 저장 완료: {filepath}")
         print(f"   파일 크기: {filepath.stat().st_size / 1024 / 1024:.2f} MB")
+        print(f"   총 플레이어: {len(data):,}")
+        print(f"   총 매치: {len(set(p['match_id'] for p in data)):,}")
 
         # 최종 파일 저장 완료 시 진행 상황 파일 삭제
         self.delete_progress(tier)
