@@ -104,3 +104,118 @@ class HealthCheckResponse(BaseModel):
     status: str
     version: str
     timestamp: datetime
+
+
+# Analysis API Models
+class AnalysisGenerateRequest(BaseModel):
+    """AI 분석 생성 요청"""
+
+    match_id: str = Field(description="Match ID (e.g., KR_1234567890)")
+    puuid: str = Field(description="Player PUUID")
+    game_name: str = Field(description="Riot ID 이름")
+    tag_line: str = Field(description="Riot ID 태그")
+    tier: Optional[str] = Field(default="GOLD", description="Player tier")
+
+
+class ImpactFeature(BaseModel):
+    """Impact Score 주요 지표"""
+
+    name: str
+    display_name: str = Field(alias="displayName")
+    direction: str
+    shap: float
+    value: float
+
+    class Config:
+        populate_by_name = True
+
+
+class AnalysisResult(BaseModel):
+    """AI 분석 결과"""
+
+    match_id: str
+    puuid: str
+    game_name: str
+    tag_line: str
+    champion: str
+    role: str
+    win: bool
+
+    # Impact Score
+    impact_score: float
+    baseline_proba: float = Field(alias="baselineProba")
+    predicted_proba: float = Field(alias="predictedProba")
+    summary: str
+    top_features: List[ImpactFeature]
+
+    # Gap Analysis
+    gap_analysis: GapAnalysisResult
+
+    # Match Info
+    game_duration: int
+    player_stats: PlayerStats
+
+    class Config:
+        populate_by_name = True
+
+
+# Highlight API Models
+class HighlightGenerateRequest(BaseModel):
+    """하이라이트 생성 요청"""
+
+    match_id: str = Field(description="Match ID")
+    game_name: str = Field(description="Riot ID 이름")
+    tag_line: str = Field(description="Riot ID 태그")
+    top_highlights: int = Field(default=5, description="잘한 장면 개수")
+    top_mistakes: int = Field(default=3, description="못한 장면 개수")
+
+
+class ClipInfo(BaseModel):
+    """클립 정보"""
+
+    clip_path: str
+    timestamp: float
+    type: str
+    base_importance: float
+    impact_score: float
+    combined_importance: float
+    description: str
+    impact_description: str
+    details: Dict[str, Any]
+
+
+class PlayerInfo(BaseModel):
+    """플레이어 정보"""
+
+    champion_name: str = Field(alias="championName")
+    team_position: str = Field(alias="teamPosition")
+    win: bool
+    kills: int
+    deaths: int
+    assists: int
+
+    class Config:
+        populate_by_name = True
+
+
+class MatchSummary(BaseModel):
+    """매치 요약"""
+
+    player: Dict[str, str]
+    impact_analysis: Dict[str, float]
+    key_moments: Dict[str, Optional[Dict[str, Any]]]
+    highlight_count: int
+    mistake_count: int
+
+
+class HighlightResult(BaseModel):
+    """하이라이트 생성 결과"""
+
+    match_id: str
+    player: Dict[str, str]
+    match_info: Optional[PlayerInfo]
+    match_summary: Optional[MatchSummary]
+    highlights: List[ClipInfo]
+    mistakes: List[ClipInfo]
+    video_path: str
+    total_clips: int
