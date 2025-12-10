@@ -228,7 +228,10 @@ def get_top_highlights(
     else:
         filtered = highlights
 
-    return filtered[:top_n]
+    # 중요도 순으로 정렬 (내림차순)
+    sorted_highlights = sorted(filtered, key=lambda x: x['importance'], reverse=True)
+
+    return sorted_highlights[:top_n]
 
 
 # 사용 예시

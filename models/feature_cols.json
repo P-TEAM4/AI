@@ -1,0 +1,23 @@
+[
+  "cs_15",
+  "gold_15",
+  "xp_15",
+  "early_cs_total",
+  "laneMinionsFirst10Minutes",
+  "jungleCsBefore10Minutes",
+  "goldPerMinute",
+  "damagePerMinute",
+  "visionScorePerMinute",
+  "kda",
+  "kda_norm",
+  "killParticipation",
+  "soloKills",
+  "vision_norm",
+  "controlWardsPlaced",
+  "wardTakedowns",
+  "wardTakedownsBefore20M",
+  "skillshotsDodged",
+  "skillshotsHit",
+  "longestTimeSpentLiving",
+  "death_rate"
+]

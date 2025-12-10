@@ -35,66 +35,81 @@ MODEL_DIR = os.path.join(BASE_DIR, "models")  # AI/models 폴더
 MODEL_PATH = os.path.join(MODEL_DIR, "player_impact_model.json")
 FEAT_PATH = os.path.join(MODEL_DIR, "feature_cols.json")
 
-print(f"[INFO] Loading model from {MODEL_PATH}")
-model = XGBClassifier()
-model.load_model(MODEL_PATH)
+model = None
+feature_cols = []
 
-print(f"[INFO] Loading feature columns from {FEAT_PATH}")
-with open(FEAT_PATH, "r") as f:
-    feature_cols = json.load(f)
+if os.path.exists(MODEL_PATH) and os.path.exists(FEAT_PATH):
+    try:
+        print(f"[INFO] Loading model from {MODEL_PATH}")
+        model = XGBClassifier()
+        model.load_model(MODEL_PATH)
 
-print(f"[INFO] Building SHAP explainer from model...")
-# SHAP explainer를 pickle로 저장/로드하는 대신 모델에서 재생성
-# TreeExplainer는 모델만 있으면 생성 가능 (훈련 데이터 불필요)
+        print(f"[INFO] Loading feature columns from {FEAT_PATH}")
+        with open(FEAT_PATH, "r") as f:
+            feature_cols = json.load(f)
+    except Exception as e:
+        print(f"[WARN] Failed to load model: {e}")
+        model = None
+        feature_cols = []
+else:
+    print(f"[WARN] Model files not found at {MODEL_DIR}")
+
 explainer = None
-try:
-    if hasattr(model, 'get_booster'):
-        import xgboost as xgb
-        import tempfile
+if model is not None:
+    print(f"[INFO] Building SHAP explainer from model...")
+    # SHAP explainer를 pickle로 저장/로드하는 대신 모델에서 재생성
+    # TreeExplainer는 모델만 있으면 생성 가능 (훈련 데이터 불필요)
+    try:
+        if hasattr(model, 'get_booster'):
+            import xgboost as xgb
+            import tempfile
 
-        booster = model.get_booster()
+            booster = model.get_booster()
 
-        # SHAP 버전 호환성 문제 해결: base_score 파싱 에러 우회
-        # XGBoost의 새로운 형식 '[5E-1]'을 SHAP가 파싱하지 못하는 문제
-        try:
-            import json as json_lib
-            model_dump = booster.save_config()
-            model_dict = json_lib.loads(model_dump)
+            # SHAP 버전 호환성 문제 해결: base_score 파싱 에러 우회
+            # XGBoost의 새로운 형식 '[5E-1]'을 SHAP가 파싱하지 못하는 문제
+            try:
+                import json as json_lib
+                model_dump = booster.save_config()
+                model_dict = json_lib.loads(model_dump)
 
-            # base_score가 리스트 형식인 경우 첫 번째 값만 사용
-            if 'learner' in model_dict and 'learner_model_param' in model_dict['learner']:
-                base_score = model_dict['learner']['learner_model_param'].get('base_score', '0.5')
-                if isinstance(base_score, str) and base_score.startswith('['):
-                    # '[5E-1]' -> '5E-1' -> 0.5
-                    base_score_clean = base_score.strip('[]')
-                    model_dict['learner']['learner_model_param']['base_score'] = base_score_clean
+                # base_score가 리스트 형식인 경우 첫 번째 값만 사용
+                if 'learner' in model_dict and 'learner_model_param' in model_dict['learner']:
+                    base_score = model_dict['learner']['learner_model_param'].get('base_score', '0.5')
+                    if isinstance(base_score, str) and base_score.startswith('['):
+                        # '[5E-1]' -> '5E-1' -> 0.5
+                        base_score_clean = base_score.strip('[]')
+                        model_dict['learner']['learner_model_param']['base_score'] = base_score_clean
 
-                    print(f"[INFO] Fixed base_score: {base_score} -> {base_score_clean}")
+                        print(f"[INFO] Fixed base_score: {base_score} -> {base_score_clean}")
 
-                    # 수정된 config로 완전히 새로운 Booster 생성
-                    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-                        temp_path = f.name
-                        json_lib.dump(model_dict, f)
+                        # 수정된 config로 완전히 새로운 Booster 생성
+                        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                            temp_path = f.name
+                            json_lib.dump(model_dict, f)
 
-                    # 새 Booster 생성 및 로드
-                    new_booster = xgb.Booster()
-                    new_booster.load_config(json_lib.dumps(model_dict))
-                    new_booster.load_model(MODEL_PATH)
-                    booster = new_booster
+                        # 새 Booster 생성 및 로드
+                        new_booster = xgb.Booster()
+                        new_booster.load_config(json_lib.dumps(model_dict))
+                        new_booster.load_model(MODEL_PATH)
+                        booster = new_booster
 
-                    os.unlink(temp_path)
-        except Exception as e:
-            print(f"[WARN] Could not fix base_score, trying without fix: {e}")
+                        os.unlink(temp_path)
+            except Exception as e:
+                print(f"[WARN] Could not fix base_score, trying without fix: {e}")
 
-        explainer = shap.TreeExplainer(booster)
-    else:
-        explainer = shap.TreeExplainer(model)
-except Exception as e:
-    print(f"[WARN] SHAP explainer build failed (XGBoost/SHAP version incompatibility): {e}")
-    print("[INFO] API will work without SHAP explainer (using basic feature importance)")
-    explainer = None
+            explainer = shap.TreeExplainer(booster)
+        else:
+            explainer = shap.TreeExplainer(model)
+    except Exception as e:
+        print(f"[WARN] SHAP explainer build failed (XGBoost/SHAP version incompatibility): {e}")
+        print("[INFO] API will work without SHAP explainer (using basic feature importance)")
+        explainer = None
 
-print(f"[INFO] Model and explainer loaded successfully with {len(feature_cols)} features")
+if model is not None:
+    print(f"[INFO] Model and explainer loaded successfully with {len(feature_cols)} features")
+else:
+    print(f"[INFO] Running without model - some features will be unavailable")
 
 # ---------------------------
 # 2. Riot API 설정
