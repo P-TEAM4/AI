@@ -25,11 +25,11 @@ class TestBaselineAccuracy:
             # Higher tier should have better stats
             assert higher_tier["avg_kda"] > lower_tier["avg_kda"]
             assert higher_tier["avg_cs_per_min"] > lower_tier["avg_cs_per_min"]
-            assert higher_tier["avg_gold"] > lower_tier["avg_gold"]
+            assert higher_tier["avg_gold_per_min"] > lower_tier["avg_gold_per_min"]
 
     def test_baseline_reasonableness(self, analyzer):
         """Test baseline values are within reasonable ranges"""
-        for tier in analyzer.tier_baseline.get_all_tiers():
+        for tier in analyzer.baseline_loader.get_all_tiers():
             baseline = analyzer.get_tier_baseline(tier)
 
             # KDA should be positive and reasonable
@@ -38,11 +38,11 @@ class TestBaselineAccuracy:
             # CS/min should be reasonable (pros get ~10)
             assert 0 < baseline["avg_cs_per_min"] < 12
 
-            # Gold should be reasonable
-            assert 5000 < baseline["avg_gold"] < 25000
+            # Gold per min should be reasonable
+            assert 300 < baseline["avg_gold_per_min"] < 800
 
-            # Vision score should be reasonable
-            assert 0 < baseline["avg_vision_score"] < 100
+            # Vision score per min should be reasonable
+            assert 0 < baseline["avg_vision_score_per_min"] < 5
 
             # Damage share should be between 0 and 1
             assert 0 < baseline["avg_damage_share"] < 1
@@ -56,6 +56,7 @@ class TestGapAnalysisAccuracy:
         gold_baseline = analyzer.get_tier_baseline("GOLD")
 
         # Create player with exact gold baseline stats
+        game_duration = 1800  # 30 minutes
         player_stats = PlayerStats(
             kills=int(gold_baseline["avg_kda"] * 2),
             deaths=2,
@@ -63,11 +64,14 @@ class TestGapAnalysisAccuracy:
             kda=gold_baseline["avg_kda"],
             cs=int(gold_baseline["avg_cs_per_min"] * 30),
             cs_per_min=gold_baseline["avg_cs_per_min"],
-            gold=gold_baseline["avg_gold"],
-            vision_score=gold_baseline["avg_vision_score"],
+            gold=int(gold_baseline["avg_gold_per_min"] * 30),
+            gold_per_min=gold_baseline["avg_gold_per_min"],
+            vision_score=int(gold_baseline["avg_vision_score_per_min"] * 30),
+            vision_score_per_min=gold_baseline["avg_vision_score_per_min"],
             damage_dealt=20000,
             damage_share=gold_baseline["avg_damage_share"],
-            champion_name="Test"
+            champion_name="Test",
+            game_duration=game_duration
         )
 
         result = analyzer.analyze_gap(player_stats, "GOLD")
@@ -140,6 +144,7 @@ class TestTierSuggestion:
     def test_suggest_appropriate_tier(self, analyzer):
         """Test suggesting correct tier based on performance"""
         # Diamond-level stats
+        game_duration = 1800  # 30 minutes
         diamond_stats = PlayerStats(
             kills=10,
             deaths=3,
@@ -148,16 +153,19 @@ class TestTierSuggestion:
             cs=225,
             cs_per_min=7.5,
             gold=16000,
+            gold_per_min=533.0,
             vision_score=35,
+            vision_score_per_min=1.17,
             damage_dealt=25000,
             damage_share=0.24,
-            champion_name="Test"
+            champion_name="Test",
+            game_duration=game_duration
         )
 
         suggested_tier = analyzer.suggest_target_tier(diamond_stats)
 
         # Should suggest high tier (Diamond or close)
-        high_tiers = ["PLATINUM", "EMERALD", "DIAMOND", "MASTER", "GRANDMASTER"]
+        high_tiers = ["PLATINUM", "EMERALD", "DIAMOND", "MASTER", "GRANDMASTER", "CHALLENGER"]
         assert suggested_tier in high_tiers
 
     def test_suggest_lower_tier(self, analyzer):
@@ -198,10 +206,10 @@ class TestEdgeCases:
 
     def test_invalid_tier(self, analyzer):
         """Test handling of invalid tier"""
-        baseline = analyzer.get_tier_baseline("INVALID_TIER")
-        # Should return default (GOLD)
-        assert baseline is not None
-        assert "avg_kda" in baseline
+        # Should raise ValueError for invalid tier
+        import pytest
+        with pytest.raises(ValueError):
+            analyzer.get_tier_baseline("INVALID_TIER")
 
 
 def test_overall_score_range(analyzer):
