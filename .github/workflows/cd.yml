@@ -1,0 +1,168 @@
+name: CD - Deploy to Production
+
+on:
+  workflow_run:
+    workflows: ["CI - Build and Test"]
+    types:
+      - completed
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    environment: production
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Load environment variables safely
+        id: env
+        run: |
+          echo "${{ secrets.PROD_ENV_FILE }}" > .env.tmp
+
+          while IFS='=' read -r key value || [ -n "$key" ]; do
+            [[ "$key" =~ ^#.*$ ]] && continue
+            [[ -z "$key" ]] && continue
+
+            key=$(echo "$key" | xargs)
+            value=$(echo "$value" | xargs)
+            value="${value%\"}"
+            value="${value#\"}"
+
+            echo "${key}=${value}" >> $GITHUB_OUTPUT
+          done < .env.tmp
+
+          rm -f .env.tmp
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get latest image tag
+        id: image
+        run: |
+          IMAGE_TAG="${{ steps.env.outputs.GCP_REGION }}-docker.pkg.dev/${{ steps.env.outputs.GCP_PROJECT_ID }}/${{ steps.env.outputs.ARTIFACT_REGISTRY_REPO }}/lol-highlight-ai:main-$(git rev-parse --short HEAD)"
+          echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "Using image: $IMAGE_TAG"
+
+      - name: Deploy to Compute Engine with zero-downtime
+        id: deploy
+        env:
+          INSTANCE_NAME: ${{ steps.env.outputs.COMPUTE_INSTANCE_NAME }}
+          ZONE: ${{ steps.env.outputs.COMPUTE_ZONE }}
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+          GCP_REGION: ${{ steps.env.outputs.GCP_REGION }}
+          RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
+        run: |
+          echo "${{ secrets.PROD_ENV_FILE }}" > .env.tmp
+          gcloud compute scp .env.tmp $INSTANCE_NAME:/tmp/.env --zone=$ZONE --tunnel-through-iap
+          rm -f .env.tmp
+
+          gcloud compute ssh $INSTANCE_NAME --zone=$ZONE --tunnel-through-iap --command="
+            set -e
+
+            export IMAGE_TAG='$IMAGE_TAG'
+            export GCP_REGION='$GCP_REGION'
+            export RIOT_API_KEY='$RIOT_API_KEY'
+
+            echo '==> Step 1: Docker 인증'
+            gcloud auth configure-docker \$GCP_REGION-docker.pkg.dev
+
+            echo '==> Step 2: 현재 실행 중인 이미지 저장 (롤백용)'
+            PREVIOUS_IMAGE=\$(docker inspect lol-highlight-ai-container --format='{{.Config.Image}}' 2>/dev/null || echo 'none')
+            echo \"Previous image: \$PREVIOUS_IMAGE\"
+
+            echo '==> Step 3: 새 이미지 Pull'
+            if ! docker pull \$IMAGE_TAG; then
+              echo 'Failed to pull new image'
+              exit 1
+            fi
+
+            echo '==> Step 4: 새 컨테이너 시작 (임시 포트 8001)'
+            docker run -d \
+              --name lol-highlight-ai-container-new \
+              --restart unless-stopped \
+              -p 8001:8000 \
+              --env-file /tmp/.env \
+              -e RIOT_API_KEY=\"\$RIOT_API_KEY\" \
+              \$IMAGE_TAG
+
+            echo '==> Step 5: 새 컨테이너 헬스체크 (최대 30초)'
+            HEALTHY=false
+            for i in {1..15}; do
+              if curl -f http://localhost:8001/health 2>/dev/null; then
+                HEALTHY=true
+                echo \"Health check passed after \$i attempts\"
+                break
+              fi
+              echo \"Health check attempt \$i/15...\"
+              sleep 2
+            done
+
+            if [ \"\$HEALTHY\" = true ]; then
+              echo '==> Step 6: 헬스체크 성공, 기존 컨테이너 교체'
+
+              docker stop lol-highlight-ai-container || true
+              docker rm lol-highlight-ai-container || true
+
+              docker stop lol-highlight-ai-container-new
+              docker rm lol-highlight-ai-container-new
+
+              docker run -d \
+                --name lol-highlight-ai-container \
+                --restart unless-stopped \
+                -p 8000:8000 \
+                --env-file /tmp/.env \
+                -e RIOT_API_KEY=\"\$RIOT_API_KEY\" \
+                \$IMAGE_TAG
+
+              echo '==> Step 7: 최종 확인'
+              sleep 3
+              if curl -f http://localhost:8000/health 2>/dev/null; then
+                echo 'Deployment successful!'
+              else
+                echo 'Warning: Final health check failed, but container is running'
+              fi
+
+              docker images --format '{{.Repository}}:{{.Tag}}' | \
+                grep 'lol-highlight-ai' | \
+                tail -n +4 | \
+                xargs -r docker rmi 2>/dev/null || true
+
+            else
+              echo '==> Rollback: 헬스체크 실패, 새 컨테이너 제거'
+              docker stop lol-highlight-ai-container-new || true
+              docker rm lol-highlight-ai-container-new || true
+              docker rmi \$IMAGE_TAG || true
+
+              echo 'Rollback completed. Previous container still running.'
+              exit 1
+            fi
+
+            rm -f /tmp/.env
+            echo 'Deployment completed successfully'
+          "
+
+      - name: Deployment success
+        if: success()
+        run: |
+          echo "Deployment completed successfully!"
+          echo "Image: ${{ steps.image.outputs.tag }}"
+          echo "Time: $(date)"
+
+      - name: Deployment failure
+        if: failure()
+        run: |
+          echo "Deployment failed!"
+          echo "Image: ${{ steps.image.outputs.tag }}"
+          echo "Previous container should still be running."
