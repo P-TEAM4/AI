@@ -62,8 +62,11 @@ match_analyzer = MatchAnalyzer()
 gap_analyzer = RuleBasedGapAnalyzer()
 
 # Initialize Impact Score Model
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MODEL_DIR = os.path.join(BASE_DIR, "..", "models")
+# __file__ = /Users/.../lol_project/AI/src/api/routes.py
+# We need to go up to lol_project/models
+AI_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # AI/
+PROJECT_DIR = os.path.dirname(AI_DIR)  # lol_project/
+MODEL_DIR = os.path.join(PROJECT_DIR, "models")
 MODEL_PATH = os.path.join(MODEL_DIR, "player_impact_model.json")
 FEAT_PATH = os.path.join(MODEL_DIR, "feature_cols.json")
 
@@ -81,6 +84,17 @@ if os.path.exists(MODEL_PATH) and os.path.exists(FEAT_PATH):
             feature_cols = json.load(f)
 
         print(f"[INFO] Impact Score model loaded with {len(feature_cols)} features")
+
+        # Initialize SHAP explainer
+        try:
+            import shap
+            print(f"[INFO] Initializing SHAP explainer...")
+            impact_explainer = shap.TreeExplainer(impact_model)
+            print(f"[INFO] SHAP explainer initialized successfully")
+        except Exception as e:
+            print(f"[WARN] Failed to initialize SHAP explainer: {e}")
+            impact_explainer = None
+
     except Exception as e:
         print(f"[WARN] Failed to load Impact Score model: {e}")
         impact_model = None
@@ -126,7 +140,7 @@ async def health():
 @app.post("/api/v1/analyze/match", response_model=MatchAnalysisResult)
 async def analyze_match(request: MatchRequest):
     """
-    Analyze a specific match for a player
+    Analyze a specific match for a player (POST version)
 
     Args:
         request: Match analysis request containing match_id, summoner_name, tag_line
@@ -142,6 +156,39 @@ async def analyze_match(request: MatchRequest):
             match_id=request.match_id,
             summoner_name=request.summoner_name,
             tag_line=request.tag_line,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@app.get("/api/v1/analyze/match/{match_id}", response_model=MatchAnalysisResult)
+async def analyze_match_get(
+    match_id: str,
+    summoner_name: str,
+    tag_line: str
+):
+    """
+    Analyze a specific match for a player (GET version)
+
+    Args:
+        match_id: Match ID (path parameter)
+        summoner_name: Summoner name (query parameter)
+        tag_line: Tag line (query parameter)
+
+    Returns:
+        Complete match analysis including player stats, gap analysis, and key moments
+
+    Raises:
+        HTTPException: If match not found or analysis fails
+    """
+    try:
+        result = match_analyzer.analyze_match(
+            match_id=match_id,
+            summoner_name=summoner_name,
+            tag_line=tag_line,
         )
         return result
     except ValueError as e:
@@ -226,11 +273,11 @@ async def get_available_tiers():
     Returns:
         List of tier names and their baseline statistics
     """
-    tiers = gap_analyzer.tier_baseline.get_all_tiers()
+    tiers = gap_analyzer.baseline_loader.get_all_tiers()
     tier_data = {}
 
     for tier in tiers:
-        tier_data[tier] = gap_analyzer.tier_baseline.get_baseline(tier)
+        tier_data[tier] = gap_analyzer.baseline_loader.get_baseline(tier)
 
     return {"tiers": tiers, "baselines": tier_data}
 
