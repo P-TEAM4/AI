@@ -51,9 +51,9 @@ os.makedirs(CLIPS_DIR, exist_ok=True)
 def get_timeline_data(match_id: str) -> dict:
     """Riot API로 타임라인 데이터 가져오기"""
     url = f"https://asia.api.riotgames.com/lol/match/v5/matches/{match_id}/timeline"
-    headers = {"X-Riot-Token": RIOT_API_KEY}
+    params = {"api_key": RIOT_API_KEY}
 
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, params=params)
 
     if response.status_code != 200:
         raise HTTPException(
@@ -67,9 +67,9 @@ def get_timeline_data(match_id: str) -> dict:
 def get_match_data(match_id: str) -> dict:
     """Riot API로 매치 데이터 가져오기"""
     url = f"https://asia.api.riotgames.com/lol/match/v5/matches/{match_id}"
-    headers = {"X-Riot-Token": RIOT_API_KEY}
+    params = {"api_key": RIOT_API_KEY}
 
-    response = requests.get(url, headers=headers)
+    response = requests.get(url, params=params)
 
     if response.status_code != 200:
         raise HTTPException(
@@ -106,8 +106,8 @@ async def generate_highlight_clips(
     try:
         # 1. PUUID 가져오기
         account_url = f"https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{game_name}/{tag_line}"
-        headers = {"X-Riot-Token": RIOT_API_KEY}
-        account_resp = requests.get(account_url, headers=headers)
+        params = {"api_key": RIOT_API_KEY}
+        account_resp = requests.get(account_url, params=params)
 
         if account_resp.status_code != 200:
             raise HTTPException(status_code=404, detail="Player not found")
@@ -274,6 +274,7 @@ def delete_clips(match_id: str):
 
     return {"deleted_files": deleted_files}
 
+
 @app.post("/clips/test-timeline")
 async def test_timeline_only(
     match_id: str = Form(...),
@@ -416,6 +417,54 @@ async def test_timeline_only(
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 
+@app.get("/matches/{game_name}/{tag_line}")
+def get_recent_matches(game_name: str, tag_line: str, count: int = 5):
+    """
+    플레이어의 최근 매치 ID 목록 가져오기
+
+    Args:
+        game_name: Riot ID 이름
+        tag_line: Riot ID 태그
+        count: 가져올 매치 개수 (기본 5개)
+
+    Returns:
+        최근 매치 ID 목록
+    """
+    try:
+        # PUUID 가져오기
+        account_url = f"https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{game_name}/{tag_line}"
+        params = {"api_key": RIOT_API_KEY}
+        account_resp = requests.get(account_url, params=params)
+
+        if account_resp.status_code != 200:
+            raise HTTPException(status_code=404, detail="Player not found")
+
+        puuid = account_resp.json()["puuid"]
+
+        # 최근 매치 목록 가져오기
+        matches_url = f"https://asia.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid}/ids"
+        params = {"api_key": RIOT_API_KEY, "start": 0, "count": count}
+        matches_resp = requests.get(matches_url, params=params)
+
+        if matches_resp.status_code != 200:
+            raise HTTPException(
+                status_code=matches_resp.status_code,
+                detail=f"Riot API error: {matches_resp.text}"
+            )
+
+        match_ids = matches_resp.json()
+
+        return {
+            "gameName": game_name,
+            "tagLine": tag_line,
+            "puuid": puuid,
+            "match_ids": match_ids,
+            "count": len(match_ids)
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
 
 @app.get("/")
 def root():
@@ -425,6 +474,8 @@ def root():
         "version": "1.0.0",
         "endpoints": [
             "POST /clips/generate - 영상 업로드 및 클립 생성",
+            "POST /clips/test-timeline - 타임라인만으로 하이라이트 정보 테스트",
+            "GET /matches/{game_name}/{tag_line} - 최근 매치 ID 목록 조회",
             "GET /clips/list/{match_id} - 클립 목록 조회",
             "DELETE /clips/{match_id} - 클립 삭제"
         ]
