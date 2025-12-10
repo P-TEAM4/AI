@@ -30,7 +30,7 @@ app = FastAPI(title="LoL Player Impact API", version="1.0.0")
 # 1. 모델 로딩
 # ---------------------------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MODEL_DIR = os.path.join(BASE_DIR, "..", "models")  # AI 밖의 models 폴더
+MODEL_DIR = os.path.join(BASE_DIR, "models")  # AI/models 폴더
 
 MODEL_PATH = os.path.join(MODEL_DIR, "player_impact_model.json")
 FEAT_PATH = os.path.join(MODEL_DIR, "feature_cols.json")
