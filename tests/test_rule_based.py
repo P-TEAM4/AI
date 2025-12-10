@@ -48,8 +48,8 @@ def test_get_tier_baseline(analyzer):
     gold_baseline = analyzer.get_tier_baseline("GOLD")
     assert "avg_kda" in gold_baseline
     assert "avg_cs_per_min" in gold_baseline
-    assert gold_baseline["avg_kda"] == 3.5
-    assert gold_baseline["avg_cs_per_min"] == 5.61
+    assert gold_baseline["avg_kda"] == 2.8
+    assert gold_baseline["avg_cs_per_min"] == 6.0
 
 
 def test_analyze_gap(analyzer, sample_player_stats):
