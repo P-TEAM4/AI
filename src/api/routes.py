@@ -63,10 +63,9 @@ gap_analyzer = RuleBasedGapAnalyzer()
 
 # Initialize Impact Score Model
 # __file__ = /Users/.../lol_project/AI/src/api/routes.py
-# We need to go up to lol_project/models
+# We need to go up to AI/models
 AI_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # AI/
-PROJECT_DIR = os.path.dirname(AI_DIR)  # lol_project/
-MODEL_DIR = os.path.join(PROJECT_DIR, "models")
+MODEL_DIR = os.path.join(AI_DIR, "models")
 MODEL_PATH = os.path.join(MODEL_DIR, "player_impact_model.json")
 FEAT_PATH = os.path.join(MODEL_DIR, "feature_cols.json")
 
