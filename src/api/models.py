@@ -219,3 +219,31 @@ class HighlightResult(BaseModel):
     mistakes: List[ClipInfo]
     video_path: str
     total_clips: int
+
+
+class TimelineHighlightRequest(BaseModel):
+    """타임라인 데이터로 하이라이트 추출 요청 (테스트용)"""
+
+    timeline_data: Dict[str, Any] = Field(description="Riot API timeline JSON data")
+    target_puuid: str = Field(description="Target player PUUID")
+    top_n: int = Field(default=5, ge=1, le=20, description="Number of highlights to return")
+
+
+class HighlightInfo(BaseModel):
+    """하이라이트 정보"""
+
+    timestamp: float
+    type: str
+    category: str
+    importance: float
+    description: str
+    details: Dict[str, Any]
+
+
+class TimelineHighlightResponse(BaseModel):
+    """타임라인 하이라이트 추출 결과"""
+
+    highlights: List[HighlightInfo] = Field(description="잘한 부분 (highlight)")
+    mistakes: List[HighlightInfo] = Field(description="못한 부분 (mistake)")
+    all_events: List[HighlightInfo] = Field(description="모든 이벤트")
+    total_count: int

@@ -88,32 +88,54 @@ def calculate_winrate_at_timestamp(
     # 해당 시점의 스탯으로 feature 구성
     participant_frame = frame['participantFrames'].get(str(participant_id), {})
 
-    # 모델이 사용하는 feature 추출
+    # 해당 시점까지의 킬/데스/어시스트 계산
+    kills_at_time = 0
+    deaths_at_time = 0
+    assists_at_time = 0
+
+    for f in frames[:target_frame_idx + 1]:
+        for event in f.get('events', []):
+            if event.get('type') == 'CHAMPION_KILL':
+                if event.get('killerId') == participant_id:
+                    kills_at_time += 1
+                if event.get('victimId') == participant_id:
+                    deaths_at_time += 1
+                if participant_id in event.get('assistingParticipantIds', []):
+                    assists_at_time += 1
+
+    # 모델이 사용하는 feature 추출 (해당 시점의 실제 스탯 사용)
+    cs_at_time = participant_frame.get('minionsKilled', 0) + participant_frame.get('jungleMinionsKilled', 0)
+    gold_at_time = participant_frame.get('totalGold', 0)
+    xp_at_time = participant_frame.get('xp', 0)
+    level_at_time = participant_frame.get('level', 1)
+
+    # 분당 수치 계산
+    time_elapsed = max(timestamp_minutes, 1)
+    gpm_at_time = gold_at_time / time_elapsed
+
     feature_dict = {
-        # 타임라인 기반 feature
-        'cs_15': participant_frame.get('minionsKilled', 0) + participant_frame.get('jungleMinionsKilled', 0),
-        'gold_15': participant_frame.get('totalGold', 0),
-        'xp_15': participant_frame.get('xp', 0),
-        'early_cs_total': participant_frame.get('minionsKilled', 0) + participant_frame.get('jungleMinionsKilled', 0),
+        # 타임라인 기반 feature (실제 시점 데이터)
+        'cs_15': cs_at_time,
+        'gold_15': gold_at_time,
+        'xp_15': xp_at_time,
+        'early_cs_total': cs_at_time,
         'laneMinionsFirst10Minutes': participant_frame.get('minionsKilled', 0),
         'jungleCsBefore10Minutes': participant_frame.get('jungleMinionsKilled', 0),
-
-        # 게임 전체 스탯 (최종값 사용 - 근사치)
-        'goldPerMinute': participant_info.get('challenges', {}).get('goldPerMinute', 0),
-        'damagePerMinute': participant_info.get('challenges', {}).get('damagePerMinute', 0),
-        'visionScorePerMinute': participant_info.get('challenges', {}).get('visionScorePerMinute', 0),
-        'kda': (participant_info['kills'] + participant_info['assists']) / max(1, participant_info['deaths']),
-        'kda_norm': 0.5,  # 팀 내 정규화는 실시간으로 불가능
-        'killParticipation': participant_info.get('challenges', {}).get('killParticipation', 0),
-        'soloKills': participant_info.get('challenges', {}).get('soloKills', 0),
+        'goldPerMinute': gpm_at_time,
+        'damagePerMinute': 0,  # 타임라인에서 직접 계산 불가
+        'visionScorePerMinute': 0,  # 타임라인에서 직접 계산 불가
+        'kda': (kills_at_time + assists_at_time) / max(1, deaths_at_time),
+        'kda_norm': 0.5,
+        'killParticipation': 0,  # 근사치
+        'soloKills': 0,  # 근사치
         'vision_norm': 0.5,
-        'controlWardsPlaced': participant_info.get('challenges', {}).get('controlWardsPlaced', 0),
-        'wardTakedowns': participant_info.get('challenges', {}).get('wardTakedowns', 0),
-        'wardTakedownsBefore20M': participant_info.get('challenges', {}).get('wardTakedownsBefore20M', 0),
-        'skillshotsDodged': participant_info.get('challenges', {}).get('skillshotsDodged', 0),
-        'skillshotsHit': participant_info.get('challenges', {}).get('skillshotsHit', 0),
-        'longestTimeSpentLiving': participant_info.get('longestTimeSpentLiving', 0),
-        'death_rate': participant_info['deaths']
+        'controlWardsPlaced': 0,
+        'wardTakedowns': 0,
+        'wardTakedownsBefore20M': 0,
+        'skillshotsDodged': 0,
+        'skillshotsHit': 0,
+        'longestTimeSpentLiving': time_elapsed * 60,  # 근사치
+        'death_rate': deaths_at_time
     }
 
     # DataFrame 생성 및 예측
@@ -136,32 +158,67 @@ def calculate_event_impact_score(
     """
     이벤트가 게임에 미친 영향 계산
 
-    이벤트 전후의 승률 변화를 계산하여 Impact Score 산출
+    이벤트 유형과 상황을 분석하여 Impact Score 산출
 
     Returns:
         Impact Score 변화량 (-100 ~ +100)
     """
     timestamp_minutes = event['timestamp'] / 60000
+    event_type = event.get('type', '')
 
-    # 이벤트 직전 승률
-    if timestamp_minutes > 1:
-        winrate_before = calculate_winrate_at_timestamp(
-            timeline_data, match_data, participant_id,
-            timestamp_minutes - 1, model, feature_cols
-        )
-    else:
-        winrate_before = 0.5
-
-    # 이벤트 직후 승률
-    winrate_after = calculate_winrate_at_timestamp(
+    # 기본 승률 계산
+    current_winrate = calculate_winrate_at_timestamp(
         timeline_data, match_data, participant_id,
         timestamp_minutes, model, feature_cols
     )
 
-    # 승률 변화를 Impact Score로 변환 (0~100 스케일)
-    impact_delta = (winrate_after - winrate_before) * 100
+    # 이벤트 유형별 임팩트 계산
+    if event_type == 'kill':
+        # 킬의 경우: 초반 킬은 더 큰 영향
+        base_impact = 5.0
+        if timestamp_minutes < 5:
+            base_impact += 3.0
+        if event['details'].get('shutdown_bounty', 0) > 0:
+            base_impact += 2.0
+        # 어시스트 수로 팀파이트 여부 판단
+        if len(event['details'].get('assistants', [])) >= 3:
+            base_impact += 2.0
+        impact_score = base_impact * (0.5 + current_winrate)
 
-    return impact_delta
+    elif event_type == 'death':
+        # 데스의 경우: 부정적 영향
+        base_impact = -5.0
+        if timestamp_minutes < 5:
+            base_impact -= 3.0
+        if event['details'].get('bounty', 0) > 300:
+            base_impact -= 2.0
+        impact_score = base_impact * (1.5 - current_winrate)
+
+    elif event_type == 'objective':
+        # 오브젝트 획득: 유형별 중요도
+        obj_type = event['details'].get('object_type', '')
+        impact_map = {
+            'BARON_NASHOR': 15.0,
+            'ELDER_DRAGON': 12.0,
+            'DRAGON': 8.0,
+            'RIFTHERALD': 7.0,
+            'HORDE': 6.0,
+            'INHIBITOR': 10.0,
+            'NEXUS_TURRET': 12.0,
+            'BASE_TURRET': 8.0,
+            'INNER_TURRET': 6.0,
+            'OUTER_TURRET': 4.0,
+        }
+        base_impact = impact_map.get(obj_type, 5.0)
+        # 게임 후반으로 갈수록 오브젝트 중요도 증가
+        if timestamp_minutes > 20:
+            base_impact *= 1.3
+        impact_score = base_impact * (0.7 + current_winrate * 0.6)
+
+    else:
+        impact_score = 0.0
+
+    return impact_score
 
 
 def enrich_highlights_with_impact(
