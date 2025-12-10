@@ -274,6 +274,148 @@ def delete_clips(match_id: str):
 
     return {"deleted_files": deleted_files}
 
+@app.post("/clips/test-timeline")
+async def test_timeline_only(
+    match_id: str = Form(...),
+    game_name: str = Form(...),
+    tag_line: str = Form(...),
+    top_highlights: int = Form(5),
+    top_mistakes: int = Form(3)
+):
+    """
+    영상 없이 타임라인만으로 하이라이트 정보 테스트
+
+    Args:
+        match_id: 매치 ID (예: KR_7951354433)
+        game_name: Riot ID 이름
+        tag_line: Riot ID 태그
+        top_highlights: 잘한 장면 개수
+        top_mistakes: 못한 장면 개수
+
+    Returns:
+        하이라이트 정보 (클립 생성 없음)
+    """
+    try:
+        # 1. PUUID 가져오기
+        print(f"[DEBUG] Getting PUUID for {game_name}#{tag_line}")
+        account_url = f"https://asia.api.riotgames.com/riot/account/v1/accounts/by-riot-id/{game_name}/{tag_line}"
+        params = {"api_key": RIOT_API_KEY}
+        account_resp = requests.get(account_url, params=params)
+
+        if account_resp.status_code != 200:
+            print(f"[ERROR] Player not found: {account_resp.status_code}")
+            raise HTTPException(status_code=404, detail="Player not found")
+
+        puuid = account_resp.json()["puuid"]
+        print(f"[DEBUG] Found PUUID: {puuid}")
+
+        # 2. 타임라인 데이터 가져오기
+        print(f"[DEBUG] Getting timeline for match: {match_id}")
+        timeline_data = get_timeline_data(match_id)
+        match_data = get_match_data(match_id)
+        print(f"[DEBUG] Timeline and match data retrieved successfully")
+
+        # 3. 하이라이트 추출
+        print(f"[DEBUG] Extracting highlights for PUUID: {puuid}")
+        print(f"[DEBUG] Timeline participants: {timeline_data['metadata']['participants']}")
+        print(f"[DEBUG] Total frames: {len(timeline_data['info']['frames'])}")
+
+        all_highlights = extract_highlights_from_timeline(timeline_data, puuid)
+
+        print(f"[DEBUG] Extracted {len(all_highlights)} highlights")
+
+        if not all_highlights:
+            raise HTTPException(status_code=404, detail="No highlights found for this player")
+
+        # 4. Impact Score 모델과 연동하여 중요도 강화
+        participant_id = None
+        for idx, p in enumerate(timeline_data['metadata']['participants']):
+            if p == puuid:
+                participant_id = idx + 1
+                break
+
+        if participant_id:
+            all_highlights = enrich_highlights_with_impact(
+                all_highlights,
+                timeline_data,
+                match_data,
+                participant_id,
+                impact_model,
+                feature_cols
+            )
+
+        # 5. 잘한 부분 / 못한 부분 분리
+        highlight_clips = get_top_highlights(all_highlights, top_n=top_highlights, category='highlight')
+        mistake_clips = get_top_highlights(all_highlights, top_n=top_mistakes, category='mistake')
+
+        # 6. 클립 정보 (영상 없이 타임스탬프만)
+        highlights_info = []
+        mistakes_info = []
+
+        for h in highlight_clips:
+            highlights_info.append({
+                "timestamp": h["timestamp"],
+                "type": h["type"],
+                "base_importance": h["importance"],
+                "impact_score": h.get("impact_score", 0),
+                "combined_importance": h.get("combined_importance", h["importance"]),
+                "description": h["description"],
+                "impact_description": h.get("impact_description", ""),
+                "details": h["details"]
+            })
+
+        for h in mistake_clips:
+            mistakes_info.append({
+                "timestamp": h["timestamp"],
+                "type": h["type"],
+                "base_importance": h["importance"],
+                "impact_score": h.get("impact_score", 0),
+                "combined_importance": h.get("combined_importance", h["importance"]),
+                "description": h["description"],
+                "impact_description": h.get("impact_description", ""),
+                "details": h["details"]
+            })
+
+        # 7. 매치 정보 추가
+        player_info = None
+        for participant in match_data['info']['participants']:
+            if participant['puuid'] == puuid:
+                player_info = {
+                    "championName": participant['championName'],
+                    "teamPosition": participant['teamPosition'],
+                    "win": participant['win'],
+                    "kills": participant['kills'],
+                    "deaths": participant['deaths'],
+                    "assists": participant['assists']
+                }
+                break
+
+        # 8. 매치 요약 생성
+        if participant_id:
+            match_summary = generate_match_summary(all_highlights, match_data, participant_id)
+        else:
+            match_summary = None
+
+        return {
+            "match_id": match_id,
+            "player": {
+                "gameName": game_name,
+                "tagLine": tag_line,
+                "puuid": puuid
+            },
+            "match_info": player_info,
+            "match_summary": match_summary,
+            "highlights": highlights_info,
+            "mistakes": mistakes_info,
+            "total_highlights": len(highlights_info) + len(mistakes_info)
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+
 
 @app.get("/")
 def root():
