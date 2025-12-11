@@ -20,6 +20,7 @@ import argparse
 import sys
 from src.api.routes import app
 from src.config.settings import settings
+from src.config.log_config import LOGGING_CONFIG
 
 
 def parse_args():
@@ -91,6 +92,7 @@ def main():
             reload=reload,
             log_level=args.log_level.lower(),
             access_log=True,
+            log_config=LOGGING_CONFIG,
         )
     except KeyboardInterrupt:
         print("\nShutting down server...")
