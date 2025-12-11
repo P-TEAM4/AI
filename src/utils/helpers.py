@@ -2,21 +2,42 @@
 
 import logging
 from typing import Any, Dict
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+
+# KST timezone (UTC+9)
+KST = timezone(timedelta(hours=9))
+
+
+class KSTFormatter(logging.Formatter):
+    """Custom formatter to use KST timezone"""
+
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, tz=KST)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def setup_logging(log_file: str = "logs/app.log", level: str = "INFO"):
     """
-    Setup logging configuration
+    Setup logging configuration with KST timezone
 
     Args:
         log_file: Path to log file
         level: Logging level
     """
+    formatter = KSTFormatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setFormatter(formatter)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+
     logging.basicConfig(
         level=getattr(logging, level.upper()),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
+        handlers=[file_handler, stream_handler],
     )
 
 
