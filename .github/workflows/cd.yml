@@ -97,20 +97,23 @@ jobs:
               -e RIOT_API_KEY=\"\$RIOT_API_KEY\" \
               \$IMAGE_TAG
 
-            echo '==> Step 5: 새 컨테이너 헬스체크 (최대 30초)'
+            echo '==> Step 5: 애플리케이션 시작 대기 (30초)'
+            sleep 30
+
+            echo '==> Step 6: 새 컨테이너 헬스체크 (최대 60초, 5초 간격)'
             HEALTHY=false
-            for i in {1..15}; do
+            for i in {1..12}; do
               if curl -f http://localhost:8001/health 2>/dev/null; then
                 HEALTHY=true
                 echo \"Health check passed after \$i attempts\"
                 break
               fi
-              echo \"Health check attempt \$i/15...\"
-              sleep 2
+              echo \"Health check attempt \$i/12...\"
+              sleep 5
             done
 
             if [ \"\$HEALTHY\" = true ]; then
-              echo '==> Step 6: 헬스체크 성공, 기존 컨테이너 교체'
+              echo '==> Step 7: 헬스체크 성공, 기존 컨테이너 교체'
 
               docker stop lol-highlight-ai-container || true
               docker rm lol-highlight-ai-container || true
@@ -126,7 +129,7 @@ jobs:
                 -e RIOT_API_KEY=\"\$RIOT_API_KEY\" \
                 \$IMAGE_TAG
 
-              echo '==> Step 7: 최종 확인'
+              echo '==> Step 8: 최종 확인'
               sleep 3
               if curl -f http://localhost:8000/health 2>/dev/null; then
                 echo 'Deployment successful!'
@@ -140,7 +143,13 @@ jobs:
                 xargs -r docker rmi 2>/dev/null || true
 
             else
-              echo '==> Rollback: 헬스체크 실패, 새 컨테이너 제거'
+              echo '==> Rollback: 헬스체크 실패'
+              echo '==> 컨테이너 로그 (마지막 100줄):'
+              docker logs --tail 100 lol-highlight-ai-container-new || true
+              echo '==> 컨테이너 상태:'
+              docker ps -a | grep lol-highlight-ai-container-new || true
+
+              echo '==> 새 컨테이너 제거'
               docker stop lol-highlight-ai-container-new || true
               docker rm lol-highlight-ai-container-new || true
               docker rmi \$IMAGE_TAG || true
