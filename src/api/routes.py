@@ -11,7 +11,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from datetime import datetime
 import numpy as np
 import xgboost as xgb
@@ -218,11 +218,11 @@ async def root():
             return HTMLResponse(content=f.read())
     else:
         # Fallback to health check if no index.html
-        return {
+        return JSONResponse(content={
             "status": "healthy",
             "version": __version__,
             "message": "Web UI not found. Please check /docs for API documentation."
-        }
+        })
 
 
 @app.get("/api", response_model=HealthCheckResponse)

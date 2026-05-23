@@ -1,7 +1,11 @@
 """
 백엔드 통합 API 테스트
+
+실서버가 필요한 통합 테스트입니다.
+CI에서는 자동으로 제외되며, 로컬에서 서버 실행 후 pytest -m integration 으로 실행하세요.
 """
 
+import pytest
 import requests
 import json
 from typing import Dict, Any
@@ -86,6 +90,7 @@ SAMPLE_TIMELINE_DATA = {
 }
 
 
+@pytest.mark.integration
 def test_health_check():
     """Health check 테스트"""
     print("=" * 60)
@@ -105,6 +110,7 @@ def test_health_check():
     print("✅ Health check 성공!\n")
 
 
+@pytest.mark.integration
 def test_single_match_analysis():
     """단일 매치 분석 테스트"""
     print("=" * 60)
@@ -156,6 +162,7 @@ def test_single_match_analysis():
         print(f"❌ 에러: {response.text}\n")
 
 
+@pytest.mark.integration
 def test_single_match_without_timeline():
     """타임라인 없이 매치 분석 테스트"""
     print("=" * 60)
@@ -191,6 +198,7 @@ def test_single_match_without_timeline():
         print(f"❌ 에러: {response.text}\n")
 
 
+@pytest.mark.integration
 def test_batch_analysis():
     """일괄 분석 테스트"""
     print("=" * 60)
@@ -253,6 +261,7 @@ def test_batch_analysis():
         print(f"❌ 에러: {response.text}\n")
 
 
+@pytest.mark.integration
 def test_extreme_stats():
     """극단적인 통계 테스트"""
     print("=" * 60)
