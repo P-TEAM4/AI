@@ -1,3 +1,5 @@
+import os
+import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -6,6 +8,8 @@ import shap
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+
+MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models")
 
 
 PLAYER_DF_PATH = "data/processed/player_stats.csv"
@@ -372,7 +376,25 @@ def compute_player_impact(
     model,
     explainer,
     feature_cols,
+    role_stats: dict = None,
+    team_rows: pd.DataFrame = None,
 ) -> dict:
+    """
+    개선된 기여도 점수 계산.
+
+    승패 bias를 줄이기 위해 세 가지 점수를 혼합:
+      - SHAP 점수 (50%): 모델 예측 기반 개인 기여도
+      - 팀 내 순위 점수 (25%): 같은 경기 팀원 5명 중 상대적 순위
+      - 포지션 z-score 점수 (25%): 같은 포지션 평균 대비 상대적 성과
+
+    Args:
+        row: 플레이어 한 행
+        model: XGBoost 모델
+        explainer: SHAP explainer
+        feature_cols: feature 컬럼 리스트
+        role_stats: {role: {feature: (mean, std)}} 포지션별 통계 (없으면 이 점수 생략)
+        team_rows: 같은 팀 5명의 DataFrame (없으면 팀 내 순위 점수 생략)
+    """
     match_id = row["matchId"]
     team_id = row["teamId"]
     champ = row.get("champion", "Unknown")
@@ -381,26 +403,85 @@ def compute_player_impact(
 
     x = row[feature_cols].astype(float).to_numpy().reshape(1, -1)
 
-    # 1) 모델이 추정한 승리 확률 및 0~100 점수
+    # 1) 모델이 추정한 승리 확률
     prob_win = float(model.predict_proba(x)[0, 1])
-    score_100 = prob_win * 100.0
 
-    # 2) SHAP 관련 초기값 (explainer 가 None 인 경우를 위해 기본값 준비)
+    # 2) SHAP 관련 초기값
     base_value = 0.5
     shap_vals = np.zeros(len(feature_cols), dtype=float)
 
     if explainer is not None:
-        # explainer가 있을 때만 SHAP 계산
         shap_expl = explainer(x)
-        # Tree / Permutation explainer 모두 대응하도록 values를 1차원 배열로 변환
         shap_vals = np.array(shap_expl.values[0], dtype=float)
-
-        # base_values 가 스칼라/배열 어떤 형태여도 첫 값을 가져오도록 처리
         bv = shap_expl.base_values
         try:
             base_value = float(np.ravel(bv)[0])
         except Exception:
             base_value = float(bv)
+        if base_value < 0.1 or base_value > 0.9:
+            base_value = 0.5
+
+    positive_shap = shap_vals[shap_vals > 0].sum()
+    negative_shap = shap_vals[shap_vals < 0].sum()
+
+    # SHAP 점수: prob_win 기반 (0~100), 승패와 연동되지만 개인 기여만 반영
+    total_shap = prob_win - base_value  # -0.5 ~ +0.5
+    shap_score = 50.0 + (total_shap * 80)  # 10 ~ 90점
+    shap_score = float(np.clip(shap_score, 0, 100))
+
+    # ------------------------------------------------------------------
+    # 3) 팀 내 순위 점수 (승패 독립)
+    #    같은 팀 5명의 prob_win을 비교해 순위 산출 → 1위=100, 5위=0
+    # ------------------------------------------------------------------
+    team_rank_score = 50.0  # 기본값 (팀 정보 없을 때)
+    if team_rows is not None and len(team_rows) > 1:
+        team_probs = []
+        for _, tr in team_rows.iterrows():
+            tx = tr[feature_cols].astype(float).to_numpy().reshape(1, -1)
+            tp = float(model.predict_proba(tx)[0, 1])
+            team_probs.append(tp)
+        team_probs = np.array(team_probs)
+        rank = int(np.sum(team_probs > prob_win))  # 나보다 높은 사람 수 (0=1위)
+        n = len(team_probs)
+        team_rank_score = 100.0 * (1 - rank / (n - 1)) if n > 1 else 50.0
+
+    # ------------------------------------------------------------------
+    # 4) 포지션 z-score 점수 (승패 독립)
+    #    같은 포지션 평균/표준편차 대비 z-score → sigmoid로 0~100 변환
+    #    핵심 feature들만 사용
+    # ------------------------------------------------------------------
+    ROLE_FEATURES = [
+        "goldPerMinute", "damagePerMinute", "kda",
+        "killParticipation", "cs_15", "visionScorePerMinute",
+    ]
+    role_zscore = 0.0
+    role_zscore_score = 50.0
+    if role_stats is not None and role in role_stats:
+        stats = role_stats[role]
+        zscores = []
+        for feat in ROLE_FEATURES:
+            if feat in stats and feat in row.index:
+                mean, std = stats[feat]
+                if std > 1e-9:
+                    z = (float(row[feat]) - mean) / std
+                    # death_rate는 낮을수록 좋으므로 부호 반전 (여기선 미포함)
+                    zscores.append(z)
+        if zscores:
+            role_zscore = float(np.mean(zscores))
+            # sigmoid: z=0 → 50점, z=2 → ~88점, z=-2 → ~12점
+            role_zscore_score = 100.0 / (1 + np.exp(-role_zscore * 0.8))
+
+    # ------------------------------------------------------------------
+    # 5) 최종 점수: 세 점수 가중 혼합
+    #    SHAP 50% + 팀 내 순위 25% + 포지션 z-score 25%
+    #    → 승패 영향을 ~50%에서 0%로 낮춤 (팀 내/포지션은 승패 무관)
+    # ------------------------------------------------------------------
+    score_100 = (shap_score * 0.5) + (team_rank_score * 0.25) + (role_zscore_score * 0.25)
+    score_100 = float(np.clip(score_100, 0, 100))
+
+    positive_contribution = positive_shap * 10
+    negative_contribution = negative_shap * 10
+    win_bonus = 0.0  # 승패 보너스 제거
 
     # 3) SHAP 절대값 기준 상위 feature 선택 (explainer가 없으면 전부 0으로 처리됨)
     abs_vals = np.abs(shap_vals)
@@ -454,17 +535,33 @@ def compute_player_impact(
         "plate_participation": "포탑 방패 참여도",
     }
 
-    # 4) 점수 구간에 따른 요약 문구
+    # 4) 점수 구간에 따른 등급 및 요약 문구
     if score_100 >= 85:
-        summary = "이번 판에서 팀 승리에 크게 기여한 경기입니다."
-    elif score_100 >= 60:
-        summary = "팀 승리에 의미 있는 기여를 한 경기입니다."
-    elif score_100 >= 35:
-        summary = "기여와 아쉬운 점이 모두 있었던 무난한 경기입니다."
-    elif score_100 >= 15:
-        summary = "전반적으로 아쉬운 경기였으며 개선 여지가 많습니다."
+        grade = "S"
+        summary = "탁월한 경기력! 개인 플레이가 매우 뛰어났습니다."
+    elif score_100 >= 70:
+        grade = "A"
+        summary = "우수한 경기력! 대부분의 지표에서 좋은 성과를 보였습니다."
+    elif score_100 >= 55:
+        grade = "B"
+        summary = "평균 이상의 경기력을 보였습니다."
+    elif score_100 >= 40:
+        grade = "C"
+        summary = "평균적인 경기였습니다. 개선할 부분이 있습니다."
     else:
-        summary = "이번 판에서는 팀 승리에 거의 기여하지 못한 경기입니다."
+        grade = "D"
+        summary = "아쉬운 경기였습니다. 주요 지표에서 개선이 필요합니다."
+
+    # 승패 별도 코멘트 추가
+    if win:
+        match_comment = f"승리한 경기에서 {grade} 등급의 성과를 거두었습니다."
+    else:
+        if score_100 >= 70:
+            match_comment = f"패배했지만 개인 플레이는 {grade} 등급으로 훌륭했습니다."
+        elif score_100 >= 55:
+            match_comment = f"패배한 경기에서 {grade} 등급의 선방했습니다."
+        else:
+            match_comment = f"패배한 경기에서 {grade} 등급의 아쉬운 성과를 보였습니다."
 
     # 5) 상위 feature들 정리 (API/콘솔 공용)
     top_features = []
@@ -487,9 +584,16 @@ def compute_player_impact(
         "role": role,
         "win": int(win),
         "impactScore": float(score_100),
+        "grade": grade,
+        "summary": summary,
+        "matchComment": match_comment,
+        "scoreBreakdown": {
+            "positiveContribution": float(positive_contribution),
+            "negativeContribution": float(negative_contribution),
+            "winBonus": float(win_bonus if win else 0.0),
+        },
         "baselineProba": float(base_value),
         "predictedProba": float(prob_win),
-        "summary": summary,
         "features": {
             "top": top_features,
             "raw": {fname: float(row[fname]) for fname in feature_cols},
@@ -505,6 +609,7 @@ def shap_player_report(
     feature_cols,
     puuid: str,
     match_id: str | None = None,
+    role_stats: dict = None,
 ):
     """특정 유저(puuid)의 한 경기 리포트.
 
@@ -526,7 +631,10 @@ def shap_player_report(
         row = player_rows.iloc[-1]
         match_id = row["matchId"]
 
-    report = compute_player_impact(row, model, explainer, feature_cols)
+    team_rows = df[(df["matchId"] == match_id) & (df["teamId"] == row["teamId"])]
+    report = compute_player_impact(row, model, explainer, feature_cols,
+                                   role_stats=role_stats,
+                                   team_rows=team_rows)
 
     print("\n==============================")
     print(f"[플레이 리포트] {report['matchId']} – {report['champion']} ({report['role']})")
@@ -555,6 +663,18 @@ def shap_player_report(
     return report
 
 
+def build_role_stats(df: pd.DataFrame, features: list) -> dict:
+    """포지션별 feature 평균/표준편차 계산 (점수 정규화용)"""
+    role_stats = {}
+    for role, grp in df.groupby("role"):
+        role_stats[role] = {}
+        for feat in features:
+            if feat in grp.columns:
+                vals = pd.to_numeric(grp[feat], errors="coerce").dropna()
+                role_stats[role][feat] = (float(vals.mean()), float(vals.std()))
+    return role_stats
+
+
 def main():
     print("[INFO] Loading player stats from:", PLAYER_DF_PATH)
     df = load_player_data(PLAYER_DF_PATH)
@@ -572,20 +692,45 @@ def main():
 
     # 성능 평가
     print("\n[INFO] Evaluating model on train/val/test sets...")
-    train_metrics = evaluate_model(model, train_df, feature_cols, dataset_name="Train")
-    val_metrics = evaluate_model(model, val_df, feature_cols, dataset_name="Validation")
-    test_metrics = evaluate_model(model, test_df, feature_cols, dataset_name="Test")
+    evaluate_model(model, train_df, feature_cols, dataset_name="Train")
+    evaluate_model(model, val_df, feature_cols, dataset_name="Validation")
+    evaluate_model(model, test_df, feature_cols, dataset_name="Test")
 
     # SHAP 분석 (train 데이터 사용)
     print("\n[INFO] Building SHAP explainer (global analysis)...")
     explainer = build_shap_explainer(model, train_df, feature_cols, sample_size=2000, background_size=200)
 
-    # 샘플 리포트 (test 데이터에서)
-    unique_puuids = test_df["puuid"].unique()[:5]
+    # 포지션별 통계 계산 (전체 데이터 기준)
+    print("\n[INFO] Building role stats for position-based normalization...")
+    role_stats = build_role_stats(df, feature_cols)
+    print(f"[INFO] Roles found: {list(role_stats.keys())}")
 
-    for p in unique_puuids:
-        print(f"\n[INFO] Sample player report for puuid={p}")
-        shap_player_report(test_df, model, explainer, feature_cols, puuid=p)
+    # 모델 저장
+    os.makedirs(MODEL_DIR, exist_ok=True)
+
+    model_path = os.path.join(MODEL_DIR, "player_impact_model.json")
+    feat_path = os.path.join(MODEL_DIR, "feature_cols.json")
+    role_stats_path = os.path.join(MODEL_DIR, "role_stats.json")
+
+    model.save_model(model_path)
+    print(f"[INFO] Model saved to {model_path}")
+
+    with open(feat_path, "w") as f:
+        json.dump(feature_cols, f)
+    print(f"[INFO] Feature cols saved to {feat_path}")
+
+    with open(role_stats_path, "w") as f:
+        json.dump(role_stats, f)
+    print(f"[INFO] Role stats saved to {role_stats_path}")
+
+    # 샘플 리포트 (test 데이터에서, 승/패 섞어서 확인)
+    win_samples = test_df[test_df["win"] == 1]["puuid"].unique()[:3]
+    loss_samples = test_df[test_df["win"] == 0]["puuid"].unique()[:2]
+    sample_puuids = list(win_samples) + list(loss_samples)
+
+    for p in sample_puuids:
+        print(f"\n[INFO] Sample player report for puuid={p[:20]}...")
+        shap_player_report(test_df, model, explainer, feature_cols, puuid=p, role_stats=role_stats)
 
 
 if __name__ == "__main__":

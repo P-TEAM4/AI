@@ -44,6 +44,13 @@ class MatchAnalyzer:
         # This should be calculated from match data in production
         damage_share = match_stats.get("damage_share", 0.20)
 
+        # Calculate per-minute stats
+        game_duration_minutes = game_duration / 60 if game_duration > 0 else 1
+        gold = match_stats.get("gold", 0)
+        vision_score = match_stats.get("vision_score", 0)
+        gold_per_min = gold / game_duration_minutes
+        vision_score_per_min = vision_score / game_duration_minutes
+
         return PlayerStats(
             kills=kills,
             deaths=deaths,
@@ -51,12 +58,15 @@ class MatchAnalyzer:
             kda=kda,
             cs=total_cs,
             cs_per_min=cs_per_min,
-            gold=match_stats.get("gold", 0),
-            vision_score=match_stats.get("vision_score", 0),
+            gold=gold,
+            gold_per_min=gold_per_min,
+            vision_score=vision_score,
+            vision_score_per_min=vision_score_per_min,
             damage_dealt=match_stats.get("damage_dealt", 0),
             damage_share=damage_share,
             champion_name=match_stats.get("champion_name", "Unknown"),
             position=match_stats.get("position"),
+            game_duration=game_duration,
         )
 
     def analyze_match(
