@@ -13,6 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from datetime import datetime
+import numpy as np
+import xgboost as xgb
 from dotenv import load_dotenv
 from xgboost import XGBClassifier
 
