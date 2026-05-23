@@ -221,6 +221,7 @@ async def root():
         return JSONResponse(content={
             "status": "healthy",
             "version": __version__,
+            "timestamp": datetime.now().isoformat(),
             "message": "Web UI not found. Please check /docs for API documentation."
         })
 
