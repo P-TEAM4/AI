@@ -1251,7 +1251,7 @@ async def generate_highlights(
                     impact_report = compute_player_impact(row, impact_model, impact_explainer, feature_cols)
 
                     # 디버그 로그
-                    print(f"[DEBUG] {row['champion']}: prob={impact_report['predictedProba']:.3f}, base={impact_report['baselineProba']:.3f}, score={impact_report['impactScore']:.1f}, grade={impact_report['grade']}")
+                    print(f"[DEBUG] {row['champion']}: prob={impact_report['predictedProba']:.3f}, base={impact_report['baselineProba']:.3f}, score={impact_report['impactScore']:.1f}")
 
                     # participant 정보 찾기
                     participant = None
@@ -1297,15 +1297,12 @@ async def generate_highlights(
 
                             impact_result = {
                                 "impactScore": impact_report["impactScore"],
-                                "impact_score": impact_report["impactScore"],  # 하위 호환성
-                                "grade": impact_report["grade"],
+                                "impact_score": impact_report["impactScore"],
                                 "baselineProba": impact_report["baselineProba"],
-                                "baseline_proba": impact_report["baselineProba"],  # 하위 호환성
+                                "baseline_proba": impact_report["baselineProba"],
                                 "predictedProba": impact_report["predictedProba"],
-                                "predicted_proba": impact_report["predictedProba"],  # 하위 호환성
+                                "predicted_proba": impact_report["predictedProba"],
                                 "summary": impact_report["summary"],
-                                "matchComment": impact_report["matchComment"],
-                                "scoreBreakdown": impact_report["scoreBreakdown"],
                                 "features": impact_report["features"],
                                 "champion": impact_report["champion"],
                                 "role": impact_report["role"],

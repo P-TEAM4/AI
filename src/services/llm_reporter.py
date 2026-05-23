@@ -35,7 +35,7 @@ def format_team_rankings(team_scores: List[Dict]) -> str:
         return "팀 정보 없음"
 
     lines = []
-    for i, member in enumerate(team_scores, 1):
+    for i, member in enumerate(team_scores or [], 1):
         medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}위"
         current = " (나)" if member.get('is_current_player') else ""
 
@@ -185,8 +185,8 @@ def generate_match_report(
     client = OpenAI(api_key=api_key)
 
     # 플레이어 정보 추출
-    player_info = match_data.get('player', {})
-    game_info = match_data.get('game_info', {})
+    player_info = match_data.get('player') or {}
+    game_info = match_data.get('game_info') or {}
 
     champion = player_info.get('champion', '알 수 없음')
     role = player_info.get('position', '알 수 없음')
@@ -200,7 +200,7 @@ def generate_match_report(
 
     # 팀 기여도에서 현재 플레이어 찾기
     current_player = None
-    for member in team_impact_scores:
+    for member in (team_impact_scores or []):
         if member.get('is_current_player'):
             current_player = member
             kills = member.get('kills', 0)
