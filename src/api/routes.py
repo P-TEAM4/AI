@@ -10,6 +10,7 @@ import requests
 from typing import Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from datetime import datetime
 from dotenv import load_dotenv
 from xgboost import XGBClassifier
@@ -114,6 +115,8 @@ UPLOAD_DIR = "uploads"
 CLIPS_DIR = "clips"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(CLIPS_DIR, exist_ok=True)
+
+app.mount("/clips", StaticFiles(directory=CLIPS_DIR), name="clips")
 
 
 @app.get("/", response_model=HealthCheckResponse)

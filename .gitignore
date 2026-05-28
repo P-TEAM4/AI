@@ -278,3 +278,7 @@ docker-compose.override.yml
 # FastAPI
 .pytest_cache/
 visualization_results/
+
+# Generated clips and uploaded videos
+clips/
+uploads/
