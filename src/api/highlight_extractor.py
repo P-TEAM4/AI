@@ -32,10 +32,10 @@ def extract_highlights_from_timeline(timeline_data: dict, target_puuid: str) -> 
 
     # 이벤트 순회하며 하이라이트 추출
     for frame_idx, frame in enumerate(frames):
-        timestamp_minutes = frame['timestamp'] / 60000  # ms to minutes
-
         for event in frame.get('events', []):
             event_type = event.get('type')
+            event_seconds = event['timestamp'] / 1000  # ms to seconds (이벤트 실제 시간)
+            event_minutes = event_seconds / 60
 
             # 킬 이벤트
             if event_type == 'CHAMPION_KILL':
@@ -45,13 +45,13 @@ def extract_highlights_from_timeline(timeline_data: dict, target_puuid: str) -> 
 
                 # 플레이어가 킬을 했을 때
                 if killer_id == participant_id:
-                    importance = calculate_kill_importance(event, timestamp_minutes)
+                    importance = calculate_kill_importance(event, event_minutes)
                     highlights.append({
-                        'timestamp': event['timestamp'] / 1000,  # ms to seconds
+                        'timestamp': event_seconds,
                         'type': 'kill',
-                        'category': 'highlight',  # 잘한 부분
+                        'category': 'highlight',
                         'importance': importance,
-                        'description': f"킬 ({timestamp_minutes:.1f}분)",
+                        'description': f"킬 ({event_minutes:.1f}분)",
                         'details': {
                             'victim_id': victim_id,
                             'assistants': assistants,
@@ -62,13 +62,13 @@ def extract_highlights_from_timeline(timeline_data: dict, target_puuid: str) -> 
 
                 # 플레이어가 죽었을 때
                 if victim_id == participant_id:
-                    importance = calculate_death_importance(event, timestamp_minutes)
+                    importance = calculate_death_importance(event, event_minutes)
                     highlights.append({
-                        'timestamp': event['timestamp'] / 1000,
+                        'timestamp': event_seconds,
                         'type': 'death',
-                        'category': 'mistake',  # 못한 부분
+                        'category': 'mistake',
                         'importance': importance,
-                        'description': f"데스 ({timestamp_minutes:.1f}분)",
+                        'description': f"데스 ({event_minutes:.1f}분)",
                         'details': {
                             'killer_id': killer_id,
                             'assistants': assistants
@@ -80,14 +80,14 @@ def extract_highlights_from_timeline(timeline_data: dict, target_puuid: str) -> 
                 killer_id = event.get('killerId')
                 if killer_id == participant_id or participant_id in event.get('assistingParticipantIds', []):
                     obj_type = event.get('monsterType') or event.get('buildingType')
-                    importance = calculate_objective_importance(event, timestamp_minutes)
+                    importance = calculate_objective_importance(event, event_minutes)
 
                     highlights.append({
-                        'timestamp': event['timestamp'] / 1000,
+                        'timestamp': event_seconds,
                         'type': 'objective',
                         'category': 'highlight',
                         'importance': importance,
-                        'description': f"{obj_type} 획득 ({timestamp_minutes:.1f}분)",
+                        'description': f"{obj_type} 획득 ({event_minutes:.1f}분)",
                         'details': {
                             'object_type': obj_type
                         }

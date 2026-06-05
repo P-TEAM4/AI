@@ -57,6 +57,7 @@ class MatchAnalyzer:
             damage_share=damage_share,
             champion_name=match_stats.get("champion_name", "Unknown"),
             position=match_stats.get("position"),
+            game_duration=game_duration,
         )
 
     def analyze_match(

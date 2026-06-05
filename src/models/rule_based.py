@@ -160,18 +160,18 @@ class RuleBasedGapAnalyzer:
 
         stat_names = {
             "kda": "KDA",
-            "cs_per_min": "Farming (CS/min)",
-            "gold_per_min": "Gold Efficiency",
-            "vision_score_per_min": "Vision Control",
-            "damage_share": "Damage Output",
+            "cs_per_min": "파밍 (CS/분)",
+            "gold_per_min": "골드 효율",
+            "vision_score_per_min": "시야 장악",
+            "damage_share": "딜 기여도",
         }
 
         for key, gap in normalized_gaps.items():
             stat_name = stat_names.get(key, key)
             if gap >= threshold:
-                strengths.append(f"{stat_name} (+{gap}%)")
+                strengths.append(f"{stat_name} (+{gap:.1f}%)")
             elif gap <= -threshold:
-                weaknesses.append(f"{stat_name} ({gap}%)")
+                weaknesses.append(f"{stat_name} ({gap:.1f}%)")
 
         return strengths, weaknesses
 
@@ -192,32 +192,32 @@ class RuleBasedGapAnalyzer:
 
         if any("KDA" in w for w in weaknesses):
             recommendations.append(
-                "Focus on reducing deaths and improving positioning in team fights"
+                "팀 싸움에서 포지셔닝을 개선하고 불필요한 죽음을 줄이세요"
             )
 
-        if any("Farming" in w for w in weaknesses):
+        if any("파밍" in w for w in weaknesses):
             recommendations.append(
-                "Practice last-hitting and wave management to improve CS/min"
+                "라스트히팅 연습과 웨이브 관리를 통해 분당 CS를 높이세요"
             )
 
-        if any("Gold" in w for w in weaknesses):
+        if any("골드" in w for w in weaknesses):
             recommendations.append(
-                "Optimize gold efficiency through better item builds and objective control"
+                "아이템 빌드 최적화와 오브젝트 전투 참여로 골드 효율을 높이세요"
             )
 
-        if any("Vision" in w for w in weaknesses):
+        if any("시야" in w for w in weaknesses):
             recommendations.append(
-                "Place more wards and buy control wards to improve vision score"
+                "와드와 제어 와드를 더 많이 설치해 시야 점수를 높이세요"
             )
 
-        if any("Damage" in w for w in weaknesses):
+        if any("딜" in w for w in weaknesses):
             recommendations.append(
-                "Work on champion mechanics and target selection to increase damage output"
+                "챔피언 메카닉과 타겟 선택을 개선해 딜 기여도를 높이세요"
             )
 
         if not recommendations:
             recommendations.append(
-                "Maintain current performance level and focus on consistency"
+                "현재 수준을 유지하면서 일관성에 집중하세요"
             )
 
         return recommendations
