@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import time
+import asyncio
 import shutil
 import pandas as pd
 import requests
@@ -30,6 +31,7 @@ from src.api.models import (
 )
 from src.services.analyzer import MatchAnalyzer
 from src.models.rule_based import RuleBasedGapAnalyzer
+from src.services.gemini_coach import get_coaching
 from src import __version__
 
 # Load environment variables
@@ -578,6 +580,44 @@ async def generate_analysis(request: AnalysisGenerateRequest):
                 "value": feat["value"]
             })
 
+        gap_dump = gap_result.model_dump()
+        base_strengths = gap_dump.get("strengths", [])
+        base_weaknesses = gap_dump.get("weaknesses", [])
+        base_recommendations = gap_dump.get("recommendations", [])
+
+        # 6. Gemini 코칭 (실패 시 rule-based fallback)
+        kda = f"{player_stats.kills}/{player_stats.deaths}/{player_stats.assists}"
+        game_duration_min = match_data["info"]["gameDuration"] / 60
+
+        participant_id = None
+        for idx, p in enumerate(match_data["info"]["participants"]):
+            if p["puuid"] == request.puuid:
+                participant_id = idx + 1
+                break
+
+        llm_coaching = get_coaching(
+            champion=impact_report.get("champion", ""),
+            role=impact_report.get("role", ""),
+            win=bool(impact_report.get("win", False)),
+            tier=request.tier,
+            kda=kda,
+            cs_per_min=player_stats.cs_per_min,
+            damage_share=player_stats.damage_share * 100,
+            vision_score=player_stats.vision_score_per_min,
+            gold_per_min=player_stats.gold_per_min,
+            game_duration_min=game_duration_min,
+            strengths=base_strengths,
+            weaknesses=base_weaknesses,
+            impact_score=impact_report.get("impactScore", 50.0),
+            timeline_data=timeline_data,
+            participant_id=participant_id,
+        )
+
+        if llm_coaching:
+            gap_dump["strengths"] = llm_coaching["strengths"] or base_strengths
+            gap_dump["weaknesses"] = llm_coaching["weaknesses"] or base_weaknesses
+            gap_dump["recommendations"] = llm_coaching["improvements"] or base_recommendations
+
         result = {
             "match_id": request.match_id,
             "puuid": request.puuid,
@@ -593,7 +633,7 @@ async def generate_analysis(request: AnalysisGenerateRequest):
             "summary": impact_report["summary"],
             "top_features": top_features,
 
-            "gap_analysis": gap_result.model_dump(),
+            "gap_analysis": gap_dump,
             "game_duration": match_data["info"]["gameDuration"],
             "player_stats": player_stats.model_dump()
         }
@@ -615,7 +655,9 @@ async def generate_highlights(
     game_name: str = Form(...),
     tag_line: str = Form(...),
     top_highlights: int = Form(5),
-    top_mistakes: int = Form(3)
+    top_mistakes: int = Form(3),
+    champion: str = Form(""),
+    role: str = Form(""),
 ):
     """
     하이라이트 클립 생성
@@ -686,39 +728,89 @@ async def generate_highlights(
         highlight_clips = get_top_highlights(all_highlights, top_n=top_highlights, category='highlight')
         mistake_clips = get_top_highlights(all_highlights, top_n=top_mistakes, category='mistake')
 
-        # 7. 클립 생성
-        created_highlights = []
-        created_mistakes = []
+        # 챔피언/포지션 match_data에서 직접 조회 (form param 없을 때 fallback)
+        clip_champion = champion
+        clip_role = role
+        for p in match_data["info"]["participants"]:
+            if p["puuid"] == puuid:
+                clip_champion = clip_champion or p.get("championName", "")
+                clip_role = clip_role or p.get("teamPosition", "")
+                break
+
+        # 타임라인 스노우볼 데이터 미리 계산
+        moments_map = {}
+        if participant_id:
+            try:
+                from src.services.gemini_coach import extract_game_moments
+                moments = extract_game_moments(timeline_data, participant_id, top_n=20)
+                for m in moments:
+                    moments_map[m["time"]] = m
+            except Exception as e:
+                print(f"[WARN] Failed to extract moments: {e}")
+
+        # 7. 클립 생성 (동기 — FFmpeg)
+        all_clip_data = []  # (h, clip_path, category)
 
         for h in highlight_clips:
             clip_path = create_clip(video_path, h, output_dir=os.path.join(CLIPS_DIR, match_id))
             if clip_path:
-                created_highlights.append({
-                    "clip_path": clip_path,
-                    "timestamp": h["timestamp"],
-                    "type": h["type"],
-                    "base_importance": h["importance"],
-                    "impact_score": h.get("impact_score", 0),
-                    "combined_importance": h.get("combined_importance", h["importance"]),
-                    "description": h["description"],
-                    "impact_description": h.get("impact_description", ""),
-                    "details": h["details"]
-                })
+                all_clip_data.append((h, clip_path, "highlight"))
 
         for h in mistake_clips:
             clip_path = create_clip(video_path, h, output_dir=os.path.join(CLIPS_DIR, match_id))
             if clip_path:
-                created_mistakes.append({
-                    "clip_path": clip_path,
-                    "timestamp": h["timestamp"],
-                    "type": h["type"],
-                    "base_importance": h["importance"],
-                    "impact_score": h.get("impact_score", 0),
-                    "combined_importance": h.get("combined_importance", h["importance"]),
-                    "description": h["description"],
-                    "impact_description": h.get("impact_description", ""),
-                    "details": h["details"]
-                })
+                all_clip_data.append((h, clip_path, "mistake"))
+
+        # 8. Gemini 코칭 병렬 실행
+        from src.services.gemini_coach import analyze_clip_async
+
+        async def _coaching_task(h, clip_path):
+            ts = h["timestamp"]
+            minute = int(ts // 60)
+            second = int(ts % 60)
+            time_str = f"{minute}분{second:02d}초"
+            m = moments_map.get(time_str)
+            try:
+                return await analyze_clip_async(
+                    clip_path=clip_path,
+                    event_kind=h["type"],
+                    time_str=time_str,
+                    pre_score=m["pre_score"] if m else "?:?",
+                    pre_gold_diff=m["pre_gold_diff"] if m else 0,
+                    snowball_gold=m["gold_delta"] if m else 0,
+                    snowball_label=m["label"] if m else "직후",
+                    champion=clip_champion,
+                    role=clip_role,
+                )
+            except Exception as e:
+                print(f"[WARN] Coaching task failed: {e}")
+                return None
+
+        coaching_results = await asyncio.gather(
+            *[_coaching_task(h, cp) for h, cp, _ in all_clip_data]
+        )
+
+        # 결과 조합
+        created_highlights = []
+        created_mistakes = []
+        for i, (h, clip_path, category) in enumerate(all_clip_data):
+            coaching = coaching_results[i] if not isinstance(coaching_results[i], Exception) else None
+            clip_dict = {
+                "clip_path": clip_path,
+                "timestamp": h["timestamp"],
+                "type": h["type"],
+                "base_importance": h["importance"],
+                "impact_score": h.get("impact_score", 0),
+                "combined_importance": h.get("combined_importance", h["importance"]),
+                "description": h["description"],
+                "impact_description": h.get("impact_description", ""),
+                "details": h["details"],
+                "coaching": coaching,
+            }
+            if category == "highlight":
+                created_highlights.append(clip_dict)
+            else:
+                created_mistakes.append(clip_dict)
 
         # 8. 매치 정보 추가
         player_info = None
