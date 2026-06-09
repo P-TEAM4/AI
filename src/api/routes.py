@@ -7,14 +7,31 @@ import time
 import asyncio
 import shutil
 import pandas as pd
+import numpy as np
 import requests
 from typing import Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from datetime import datetime
 from dotenv import load_dotenv
 from xgboost import XGBClassifier
+
+
+def _to_native(obj):
+    """numpy/pandas 타입을 Python native 타입으로 재귀 변환"""
+    if isinstance(obj, (np.integer,)):
+        return int(obj)
+    if isinstance(obj, (np.floating,)):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, dict):
+        return {k: _to_native(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_to_native(v) for v in obj]
+    return obj
 
 from src.api.models import (
     HealthCheckResponse,
@@ -658,6 +675,7 @@ async def generate_highlights(
     top_mistakes: int = Form(3),
     champion: str = Form(""),
     role: str = Form(""),
+    game_start_offset: float = Form(0.0),
 ):
     """
     하이라이트 클립 생성
@@ -749,19 +767,23 @@ async def generate_highlights(
                 print(f"[WARN] Failed to extract moments: {e}")
 
         # 7. 클립 생성 (동기 — FFmpeg)
+        # game_start_offset: 녹화 시작 시점의 게임 내 시간(초, 보통 음수 e.g. -85)
+        # 영상 내 실제 위치 = event_timestamp - game_start_offset
         all_clip_data = []  # (h, clip_path, category)
 
         for h in highlight_clips:
-            clip_path = create_clip(video_path, h, output_dir=os.path.join(CLIPS_DIR, match_id))
+            clip_path = create_clip(video_path, h, output_dir=os.path.join(CLIPS_DIR, match_id),
+                                    game_start_offset=game_start_offset)
             if clip_path:
                 all_clip_data.append((h, clip_path, "highlight"))
 
         for h in mistake_clips:
-            clip_path = create_clip(video_path, h, output_dir=os.path.join(CLIPS_DIR, match_id))
+            clip_path = create_clip(video_path, h, output_dir=os.path.join(CLIPS_DIR, match_id),
+                                    game_start_offset=game_start_offset)
             if clip_path:
                 all_clip_data.append((h, clip_path, "mistake"))
 
-        # 8. Gemini 코칭 병렬 실행
+        # 8. Gemini 코칭 — impact_score 기준 highlight 1개, mistake 1개만 분석
         from src.services.gemini_coach import analyze_clip_async
 
         async def _coaching_task(h, clip_path):
@@ -786,8 +808,32 @@ async def generate_highlights(
                 print(f"[WARN] Coaching task failed: {e}")
                 return None
 
+        # impact_score > combined_importance > importance 순으로 top-1 선택
+        def _top_clip(clips_with_category, category):
+            candidates = [(h, cp) for h, cp, cat in clips_with_category if cat == category]
+            if not candidates:
+                return None
+            return max(candidates, key=lambda x: (
+                x[0].get("impact_score", 0),
+                x[0].get("combined_importance", 0),
+                x[0].get("importance", 0),
+            ))
+
+        top_highlight = _top_clip(all_clip_data, "highlight")
+        top_mistake   = _top_clip(all_clip_data, "mistake")
+        gemini_targets = {id(h): False for h, _, _ in all_clip_data}
+        if top_highlight:
+            gemini_targets[id(top_highlight[0])] = True
+        if top_mistake:
+            gemini_targets[id(top_mistake[0])] = True
+
+        async def _maybe_coaching(h, clip_path):
+            if gemini_targets.get(id(h)):
+                return await _coaching_task(h, clip_path)
+            return None
+
         coaching_results = await asyncio.gather(
-            *[_coaching_task(h, cp) for h, cp, _ in all_clip_data]
+            *[_maybe_coaching(h, cp) for h, cp, _ in all_clip_data]
         )
 
         # 결과 조합
@@ -797,11 +843,11 @@ async def generate_highlights(
             coaching = coaching_results[i] if not isinstance(coaching_results[i], Exception) else None
             clip_dict = {
                 "clip_path": clip_path,
-                "timestamp": h["timestamp"],
+                "timestamp": float(h["timestamp"]),
                 "type": h["type"],
-                "base_importance": h["importance"],
-                "impact_score": h.get("impact_score", 0),
-                "combined_importance": h.get("combined_importance", h["importance"]),
+                "base_importance": float(h["importance"]),
+                "impact_score": float(h.get("impact_score", 0)),
+                "combined_importance": float(h.get("combined_importance", h["importance"])),
                 "description": h["description"],
                 "impact_description": h.get("impact_description", ""),
                 "details": h["details"],
@@ -831,7 +877,7 @@ async def generate_highlights(
         if participant_id:
             match_summary = generate_match_summary(all_highlights, match_data, participant_id)
 
-        return {
+        result = _to_native({
             "match_id": match_id,
             "player": {
                 "gameName": game_name,
@@ -844,7 +890,8 @@ async def generate_highlights(
             "mistakes": created_mistakes,
             "video_path": video_path,
             "total_clips": len(created_highlights) + len(created_mistakes)
-        }
+        })
+        return JSONResponse(content=result)
 
     except Exception as e:
         import traceback

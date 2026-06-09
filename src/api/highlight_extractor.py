@@ -159,7 +159,8 @@ def create_clip(
     highlight: Dict,
     output_dir: str = "clips",
     before_seconds: int = 10,
-    after_seconds: int = 5
+    after_seconds: int = 5,
+    game_start_offset: float = 0.0,
 ) -> str:
     """
     영상에서 클립 추출
@@ -170,6 +171,8 @@ def create_clip(
         output_dir: 클립 저장 디렉토리
         before_seconds: 이벤트 전 몇 초
         after_seconds: 이벤트 후 몇 초
+        game_start_offset: 녹화 시작 시점의 게임 내 시간(초, 보통 음수)
+                           영상 내 실제 위치 = event_time - game_start_offset
 
     Returns:
         생성된 클립 파일 경로
@@ -177,7 +180,9 @@ def create_clip(
     os.makedirs(output_dir, exist_ok=True)
 
     timestamp = highlight['timestamp']
-    start_time = max(0, timestamp - before_seconds)
+    # 녹화 시작 시점의 게임 시간을 빼서 영상 내 실제 위치로 변환
+    video_timestamp = timestamp - game_start_offset
+    start_time = max(0, video_timestamp - before_seconds)
     duration = before_seconds + after_seconds
 
     # 출력 파일명 생성

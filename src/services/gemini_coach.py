@@ -8,7 +8,7 @@ from typing import Optional
 log = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 # 레벨별 데스 타이머 (초) — LoL 위키 기준 근사값
 DEATH_TIMERS = {
@@ -166,6 +166,12 @@ def build_prompt(
     impact_score: float,
     moments: list[dict],
 ) -> str:
+    cs_per_min = cs_per_min or 0.0
+    damage_share = damage_share or 0.0
+    vision_score = vision_score or 0.0
+    gold_per_min = gold_per_min or 0.0
+    impact_score = impact_score or 0.0
+
     result = "승리" if win else "패배"
 
     moments_text = ""
@@ -314,11 +320,6 @@ def analyze_clip(
         log.warning("Clip file not found: %s", clip_path)
         return None
 
-    file_size = os.path.getsize(clip_path)
-    if file_size > 18 * 1024 * 1024:  # 18MB 초과 시 스킵
-        log.warning("Clip too large for inline upload: %.1fMB", file_size / 1024 / 1024)
-        return None
-
     try:
         with open(clip_path, "rb") as f:
             video_b64 = base64.b64encode(f.read()).decode("utf-8")
@@ -360,7 +361,7 @@ def analyze_clip(
                     ]
                 }]
             },
-            timeout=30,
+            timeout=300,
         )
 
         if resp.status_code != 200:
