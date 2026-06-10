@@ -827,20 +827,49 @@ async def generate_highlights(
         if top_mistake:
             gemini_targets[id(top_mistake[0])] = True
 
-        async def _maybe_coaching(h, clip_path):
+        def _fallback_coaching(h, category):
+            """Gemini 실패 시 이벤트 데이터 기반 기본 피드백 생성"""
+            ts = h["timestamp"]
+            minute = int(ts // 60)
+            second = int(ts % 60)
+            time_str = f"{minute}분{second:02d}초"
+            m = moments_map.get(time_str)
+            event_kind = h["type"]
+            impact = h.get("impact_score", 0)
+            snowball = m["gold_delta"] if m else 0
+            gold_diff = m["pre_gold_diff"] if m else 0
+
+            if category == "highlight":
+                if snowball > 1000:
+                    return f"{time_str} 킬 이후 {snowball:,}G 골드 차이를 만들어낸 핵심 플레이입니다. 이런 상황에서의 오브젝트 전환 타이밍을 유지하세요."
+                elif impact > 10:
+                    return f"{time_str} 승률에 {impact:.1f}% 기여한 플레이입니다. 당시 골드차 {'+' if gold_diff >= 0 else ''}{gold_diff:,}G 상황에서 좋은 결정을 내렸습니다."
+                else:
+                    return f"{time_str} 긍정적인 기여를 한 장면입니다. 이 패턴을 다음 게임에서도 유지하세요."
+            else:
+                if abs(snowball) > 1000:
+                    return f"{time_str} 데스 이후 {abs(snowball):,}G 손실이 발생했습니다. 해당 시점의 포지셔닝과 시야 확보를 재검토하세요."
+                elif abs(impact) > 5:
+                    return f"{time_str} 데스로 인해 승률이 {abs(impact):.1f}% 감소했습니다. 당시 골드차 {'+' if gold_diff >= 0 else ''}{gold_diff:,}G 상황에서 교전 판단을 재고해보세요."
+                else:
+                    return f"{time_str} 불필요한 데스 장면입니다. 시야 없이 진입하거나 불리한 교전을 피하는 습관을 기르세요."
+
+        async def _maybe_coaching(h, clip_path, category):
             if gemini_targets.get(id(h)):
-                return await _coaching_task(h, clip_path)
-            return None
+                result = await _coaching_task(h, clip_path)
+                if result is not None:
+                    return result
+            return _fallback_coaching(h, category)
 
         coaching_results = await asyncio.gather(
-            *[_maybe_coaching(h, cp) for h, cp, _ in all_clip_data]
+            *[_maybe_coaching(h, cp, cat) for h, cp, cat in all_clip_data]
         )
 
         # 결과 조합
         created_highlights = []
         created_mistakes = []
         for i, (h, clip_path, category) in enumerate(all_clip_data):
-            coaching = coaching_results[i] if not isinstance(coaching_results[i], Exception) else None
+            coaching = coaching_results[i] if not isinstance(coaching_results[i], Exception) else _fallback_coaching(h, category)
             clip_dict = {
                 "clip_path": clip_path,
                 "timestamp": float(h["timestamp"]),

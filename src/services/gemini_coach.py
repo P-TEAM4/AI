@@ -1,14 +1,14 @@
 import os
 import asyncio
-import base64
 import logging
+import time
 import requests
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 # 레벨별 데스 타이머 (초) — LoL 위키 기준 근사값
 DEATH_TIMERS = {
@@ -298,6 +298,91 @@ def get_coaching(
 
 # ─── 클립 영상 분석 ───────────────────────────────────────────────────────────
 
+GEMINI_UPLOAD_URL = "https://generativelanguage.googleapis.com/upload/v1beta/files"
+GEMINI_FILES_URL  = "https://generativelanguage.googleapis.com/v1beta/files"
+
+
+def _upload_video_file(clip_path: str) -> Optional[str]:
+    """Gemini File API로 영상 업로드 후 file_uri 반환. 실패 시 None."""
+    file_size = os.path.getsize(clip_path)
+    display_name = os.path.basename(clip_path)
+
+    # 업로드 세션 시작
+    init_resp = requests.post(
+        f"{GEMINI_UPLOAD_URL}?key={GEMINI_API_KEY}",
+        headers={
+            "X-Goog-Upload-Protocol": "resumable",
+            "X-Goog-Upload-Command": "start",
+            "X-Goog-Upload-Header-Content-Length": str(file_size),
+            "X-Goog-Upload-Header-Content-Type": "video/mp4",
+            "Content-Type": "application/json",
+        },
+        json={"file": {"display_name": display_name}},
+        timeout=30,
+    )
+    if init_resp.status_code != 200:
+        log.warning("File API upload init failed %d: %s", init_resp.status_code, init_resp.text[:200])
+        return None
+
+    upload_url = init_resp.headers.get("X-Goog-Upload-URL")
+    if not upload_url:
+        log.warning("File API did not return upload URL")
+        return None
+
+    # 파일 본문 업로드
+    with open(clip_path, "rb") as f:
+        upload_resp = requests.post(
+            upload_url,
+            headers={
+                "Content-Length": str(file_size),
+                "X-Goog-Upload-Offset": "0",
+                "X-Goog-Upload-Command": "upload, finalize",
+            },
+            data=f,
+            timeout=120,
+        )
+    if upload_resp.status_code not in (200, 201):
+        log.warning("File API upload failed %d: %s", upload_resp.status_code, upload_resp.text[:200])
+        return None
+
+    file_info = upload_resp.json().get("file", {})
+    file_name = file_info.get("name")
+    file_uri  = file_info.get("uri")
+
+    if not file_name or not file_uri:
+        log.warning("File API response missing name/uri")
+        return None
+
+    # PROCESSING 상태 대기 (최대 30초)
+    for _ in range(15):
+        state_resp = requests.get(
+            f"{GEMINI_FILES_URL}/{file_name.split('/')[-1]}?key={GEMINI_API_KEY}",
+            timeout=10,
+        )
+        if state_resp.status_code == 200:
+            state = state_resp.json().get("state", "ACTIVE")
+            if state == "ACTIVE":
+                break
+            if state == "FAILED":
+                log.warning("File API processing failed for %s", clip_path)
+                return None
+        time.sleep(2)
+
+    return file_uri
+
+
+def _delete_uploaded_file(file_uri: str) -> None:
+    """업로드된 파일 삭제 (48시간 자동 삭제되지만 즉시 정리)."""
+    try:
+        file_name = file_uri.split("/files/")[-1]
+        requests.delete(
+            f"{GEMINI_FILES_URL}/{file_name}?key={GEMINI_API_KEY}",
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
 def analyze_clip(
     clip_path: str,
     event_kind: str,       # "kill" | "death"
@@ -311,6 +396,7 @@ def analyze_clip(
 ) -> Optional[str]:
     """
     15초 클립 영상 + 게임 상황을 Gemini Vision에 전달해 플레이 피드백을 반환합니다.
+    File API로 먼저 업로드 후 uri 참조 방식 사용 (20MB 인라인 제한 우회).
     실패 시 None 반환 (fallback 없음 — 텍스트 코칭보다 없는 게 나음).
     """
     if not GEMINI_API_KEY:
@@ -318,13 +404,6 @@ def analyze_clip(
 
     if not os.path.exists(clip_path):
         log.warning("Clip file not found: %s", clip_path)
-        return None
-
-    try:
-        with open(clip_path, "rb") as f:
-            video_b64 = base64.b64encode(f.read()).decode("utf-8")
-    except Exception as e:
-        log.warning("Failed to read clip: %s", e)
         return None
 
     kind_map = {"kill": "킬", "death": "데스", "objective": "오브젝트 획득"}
@@ -345,18 +424,17 @@ def analyze_clip(
 예시 피드백 스타일: "시야 없이 강 쪽으로 진입한 것이 원인입니다", "상대 스킬을 맞은 상태로 교전을 시작했습니다", "킬 이후 오브젝트를 챙기지 않고 귀환했습니다"
 추상적인 표현("포지셔닝이 아쉽다") 대신 영상에서 보이는 행동을 직접 지적해주세요."""
 
+    file_uri = _upload_video_file(clip_path)
+    if not file_uri:
+        return None
+
     try:
         resp = requests.post(
             f"{GEMINI_URL}?key={GEMINI_API_KEY}",
             json={
                 "contents": [{
                     "parts": [
-                        {
-                            "inlineData": {
-                                "mimeType": "video/mp4",
-                                "data": video_b64,
-                            }
-                        },
+                        {"fileData": {"mimeType": "video/mp4", "fileUri": file_uri}},
                         {"text": prompt},
                     ]
                 }]
@@ -376,6 +454,9 @@ def analyze_clip(
     except Exception as e:
         log.warning("Gemini clip analysis failed: %s", e)
         return None
+    finally:
+        if file_uri:
+            _delete_uploaded_file(file_uri)
 
 
 async def analyze_clip_async(
