@@ -158,29 +158,37 @@ def create_clip(
     video_path: str,
     highlight: Dict,
     output_dir: str = "clips",
-    before_seconds: int = 10,
-    after_seconds: int = 5,
+    before_seconds: int = None,
+    after_seconds: int = None,
     game_start_offset: float = 0.0,
 ) -> str:
     """
     영상에서 클립 추출
 
+    이벤트 종류별 비대칭 윈도우:
+      데스: 전 20초 / 후 5초 — 결정적 실수는 죽기 10~20초 전에 발생
+      킬:  전 10초 / 후 15초 — 킬 후 전환(웨이브·오브젝트)이 핵심 코칭 포인트
+
     Args:
         video_path: 원본 영상 경로
         highlight: 하이라이트 정보
         output_dir: 클립 저장 디렉토리
-        before_seconds: 이벤트 전 몇 초
-        after_seconds: 이벤트 후 몇 초
+        before_seconds: 이벤트 전 초 (None이면 이벤트 종류로 자동 결정)
+        after_seconds: 이벤트 후 초 (None이면 이벤트 종류로 자동 결정)
         game_start_offset: 녹화 시작 시점의 게임 내 시간(초, 보통 음수)
-                           영상 내 실제 위치 = event_time - game_start_offset
 
     Returns:
         생성된 클립 파일 경로
     """
     os.makedirs(output_dir, exist_ok=True)
 
+    event_type = highlight.get('type', 'kill')
+    if before_seconds is None:
+        before_seconds = 20 if event_type == 'death' else 10
+    if after_seconds is None:
+        after_seconds = 10 if event_type == 'death' else 15
+
     timestamp = highlight['timestamp']
-    # 녹화 시작 시점의 게임 시간을 빼서 영상 내 실제 위치로 변환
     video_timestamp = timestamp - game_start_offset
     start_time = max(0, video_timestamp - before_seconds)
     duration = before_seconds + after_seconds
@@ -205,6 +213,8 @@ def create_clip(
         )
 
         print(f"[INFO] Created clip: {output_path}")
+        # Gemini 프롬프트용: 클립 내 이벤트 발생 시점(초) = 영상 내 위치 - 시작점
+        highlight['clip_event_sec'] = int(video_timestamp - start_time)
         return output_path
 
     except ffmpeg.Error as e:

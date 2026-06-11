@@ -607,10 +607,36 @@ async def generate_analysis(request: AnalysisGenerateRequest):
         game_duration_min = match_data["info"]["gameDuration"] / 60
 
         participant_id = None
+        summoner_spells = None
+        ally_champions = []
+        enemy_champions = []
+        player_team_id = None
+        player_role = impact_report.get("role", "")
         for idx, p in enumerate(match_data["info"]["participants"]):
             if p["puuid"] == request.puuid:
                 participant_id = idx + 1
+                player_team_id = p.get("teamId")
+                summoner_spells = (p.get("summoner1Id", 0), p.get("summoner2Id", 0))
+                if not player_role:
+                    player_role = p.get("teamPosition", "")
                 break
+
+        bot_partner_pos_a = "UTILITY" if player_role == "BOTTOM" else ("BOTTOM" if player_role == "UTILITY" else None)
+        bot_partner_name_a = None
+        other_allies_a = []
+        for p in match_data["info"]["participants"]:
+            if p["puuid"] == request.puuid:
+                continue
+            name = p.get("championName", "")
+            pos = p.get("teamPosition", "")
+            if p.get("teamId") == player_team_id:
+                if bot_partner_pos_a and pos == bot_partner_pos_a:
+                    bot_partner_name_a = name
+                else:
+                    other_allies_a.append(name)
+            else:
+                enemy_champions.append(name)
+        ally_champions = ([bot_partner_name_a] + other_allies_a) if bot_partner_name_a else other_allies_a
 
         llm_coaching = get_coaching(
             champion=impact_report.get("champion", ""),
@@ -628,12 +654,20 @@ async def generate_analysis(request: AnalysisGenerateRequest):
             impact_score=impact_report.get("impactScore", 50.0),
             timeline_data=timeline_data,
             participant_id=participant_id,
+            summoner_spells=summoner_spells,
+            ally_champions=ally_champions,
+            enemy_champions=enemy_champions,
         )
 
         if llm_coaching:
-            gap_dump["strengths"] = llm_coaching["strengths"] or base_strengths
-            gap_dump["weaknesses"] = llm_coaching["weaknesses"] or base_weaknesses
-            gap_dump["recommendations"] = llm_coaching["improvements"] or base_recommendations
+            gap_dump["strengths"] = base_strengths
+            gap_dump["weaknesses"] = base_weaknesses
+            gap_dump["recommendations"] = llm_coaching.get("improvements") or base_recommendations
+            gap_dump["coaching_summary"]  = llm_coaching.get("summary", "")
+            gap_dump["coaching_early_game"]  = llm_coaching.get("early_game", "")
+            gap_dump["coaching_mid_game"]    = llm_coaching.get("mid_game", "")
+            gap_dump["coaching_late_game"]   = llm_coaching.get("late_game", "")
+            gap_dump["coaching_key_pattern"] = llm_coaching.get("key_pattern", "")
 
         result = {
             "match_id": request.match_id,
@@ -746,14 +780,51 @@ async def generate_highlights(
         highlight_clips = get_top_highlights(all_highlights, top_n=top_highlights, category='highlight')
         mistake_clips = get_top_highlights(all_highlights, top_n=top_mistakes, category='mistake')
 
-        # 챔피언/포지션 match_data에서 직접 조회 (form param 없을 때 fallback)
+        # 챔피언/포지션/소환사주문/팀 구성 match_data에서 직접 조회
         clip_champion = champion
         clip_role = role
+        clip_summoner_spells = None
+        clip_ally_champions = []
+        clip_enemy_champions = []
+        clip_lane_opponent = None
+        clip_player_team_id = None
         for p in match_data["info"]["participants"]:
             if p["puuid"] == puuid:
                 clip_champion = clip_champion or p.get("championName", "")
                 clip_role = clip_role or p.get("teamPosition", "")
+                clip_summoner_spells = (p.get("summoner1Id", 0), p.get("summoner2Id", 0))
+                clip_player_team_id = p.get("teamId")
                 break
+        # 바텀 파트너 포지션: 플레이어가 BOTTOM이면 파트너는 UTILITY, 반대도 마찬가지
+        bot_partner_pos = None
+        if clip_role == "BOTTOM":
+            bot_partner_pos = "UTILITY"
+        elif clip_role == "UTILITY":
+            bot_partner_pos = "BOTTOM"
+
+        bot_partner_name = None
+        other_allies = []
+        for p in match_data["info"]["participants"]:
+            if p["puuid"] == puuid:
+                continue
+            name = p.get("championName", "")
+            pos = p.get("teamPosition", "")
+            if p.get("teamId") == clip_player_team_id:
+                if bot_partner_pos and pos == bot_partner_pos:
+                    bot_partner_name = name  # 실제 바텀 파트너
+                else:
+                    other_allies.append(name)
+            else:
+                clip_enemy_champions.append(name)
+                # 같은 포지션 = 직접 상대 라이너
+                if clip_role and pos == clip_role:
+                    clip_lane_opponent = name
+
+        # 바텀 파트너를 ally_champions 맨 앞에 배치해 analyze_clip의 bot_partner 로직이 올바르게 동작하도록
+        if bot_partner_name:
+            clip_ally_champions = [bot_partner_name] + other_allies
+        else:
+            clip_ally_champions = other_allies
 
         # 타임라인 스노우볼 데이터 미리 계산
         moments_map = {}
@@ -803,6 +874,11 @@ async def generate_highlights(
                     snowball_label=m["label"] if m else "직후",
                     champion=clip_champion,
                     role=clip_role,
+                    summoner_spells=clip_summoner_spells,
+                    ally_champions=clip_ally_champions,
+                    enemy_champions=clip_enemy_champions,
+                    lane_opponent=clip_lane_opponent,
+                    event_sec_in_clip=h.get("clip_event_sec"),
                 )
             except Exception as e:
                 print(f"[WARN] Coaching task failed: {e}")
@@ -821,11 +897,15 @@ async def generate_highlights(
 
         top_highlight = _top_clip(all_clip_data, "highlight")
         top_mistake   = _top_clip(all_clip_data, "mistake")
-        gemini_targets = {id(h): False for h, _, _ in all_clip_data}
+        # id() 대신 dict에 직접 플래그 마킹 (id()는 메모리 재사용으로 충돌 가능)
+        for h, _, _ in all_clip_data:
+            h["_use_gemini"] = False
         if top_highlight:
-            gemini_targets[id(top_highlight[0])] = True
+            top_highlight[0]["_use_gemini"] = True
         if top_mistake:
-            gemini_targets[id(top_mistake[0])] = True
+            top_mistake[0]["_use_gemini"] = True
+        print(f"[DEBUG] Gemini targets: highlight={top_highlight[0]['type'] if top_highlight else None}, "
+              f"mistake={top_mistake[0]['type'] if top_mistake else None}")
 
         def _fallback_coaching(h, category):
             """Gemini 실패 시 이벤트 데이터 기반 기본 피드백 생성"""
@@ -855,10 +935,12 @@ async def generate_highlights(
                     return f"{time_str} 불필요한 데스 장면입니다. 시야 없이 진입하거나 불리한 교전을 피하는 습관을 기르세요."
 
         async def _maybe_coaching(h, clip_path, category):
-            if gemini_targets.get(id(h)):
+            if h.get("_use_gemini"):
+                print(f"[DEBUG] Calling Gemini for {category}: {h['type']} at {h['timestamp']:.0f}s")
                 result = await _coaching_task(h, clip_path)
                 if result is not None:
                     return result
+                print(f"[DEBUG] Gemini failed for {category}, falling back")
             return _fallback_coaching(h, category)
 
         coaching_results = await asyncio.gather(
