@@ -154,6 +154,70 @@ def calculate_objective_importance(event: dict, timestamp_minutes: float) -> flo
     return importance_map.get(obj_type, 5.0)
 
 
+def merge_nearby_highlights(highlights: List[Dict], merge_window: float = 10.0) -> List[Dict]:
+    """
+    인접한 이벤트를 단일 클립으로 병합 (더블킬/트리플킬/한타 대응)
+
+    같은 카테고리(highlight/mistake)의 이벤트가 merge_window 초 이내에
+    연달아 발생하면 단일 확장 클립으로 묶는다.
+
+    Args:
+        highlights: 하이라이트 리스트
+        merge_window: 병합 기준 시간 간격 (초)
+
+    Returns:
+        병합된 하이라이트 리스트
+    """
+    if not highlights:
+        return []
+
+    sorted_h = sorted(highlights, key=lambda x: x['timestamp'])
+    merged = []
+    i = 0
+
+    while i < len(sorted_h):
+        group = [sorted_h[i]]
+        j = i + 1
+
+        while j < len(sorted_h):
+            nxt = sorted_h[j]
+            # 같은 카테고리이고 이전 이벤트와 merge_window 이내
+            if (nxt['category'] == group[-1]['category'] and
+                    nxt['timestamp'] - group[-1]['timestamp'] <= merge_window):
+                group.append(nxt)
+                j += 1
+            else:
+                break
+
+        if len(group) == 1:
+            merged.append(group[0])
+        else:
+            # 가장 중요도가 높은 이벤트를 기반으로 병합 이벤트 생성
+            best = max(group, key=lambda x: x.get('combined_importance', x.get('importance', 0)))
+            kill_count = sum(1 for g in group if g.get('type') == 'kill')
+            if kill_count >= 3:
+                merged_type = 'teamfight'
+            elif kill_count == 2:
+                merged_type = 'double_kill'
+            else:
+                merged_type = best['type']
+
+            merged_event = best.copy()
+            merged_event['type'] = merged_type
+            merged_event['timestamp'] = group[0]['timestamp']       # 첫 이벤트 기준
+            merged_event['timestamp_end'] = group[-1]['timestamp']  # 마지막 이벤트
+            merged_event['kill_count'] = kill_count
+            merged_event['importance'] = max(g.get('combined_importance', g.get('importance', 0)) for g in group)
+            merged_event['description'] = (
+                f"{merged_type} ({group[0]['timestamp']/60:.1f}분, {len(group)}이벤트)"
+            )
+            merged.append(merged_event)
+
+        i = j
+
+    return merged
+
+
 def create_clip(
     video_path: str,
     highlight: Dict,
@@ -166,12 +230,13 @@ def create_clip(
     영상에서 클립 추출
 
     이벤트 종류별 비대칭 윈도우:
-      데스: 전 20초 / 후 5초 — 결정적 실수는 죽기 10~20초 전에 발생
+      데스: 전 20초 / 후 10초 — 결정적 실수는 죽기 10~20초 전에 발생
       킬:  전 10초 / 후 15초 — 킬 후 전환(웨이브·오브젝트)이 핵심 코칭 포인트
+      병합 이벤트(더블킬/한타): 첫 이벤트 전 10초 ~ 마지막 이벤트 후 15초
 
     Args:
         video_path: 원본 영상 경로
-        highlight: 하이라이트 정보
+        highlight: 하이라이트 정보 (timestamp_end 있으면 병합 이벤트로 처리)
         output_dir: 클립 저장 디렉토리
         before_seconds: 이벤트 전 초 (None이면 이벤트 종류로 자동 결정)
         after_seconds: 이벤트 후 초 (None이면 이벤트 종류로 자동 결정)
@@ -189,12 +254,24 @@ def create_clip(
         after_seconds = 10 if event_type == 'death' else 15
 
     timestamp = highlight['timestamp']
-    video_timestamp = timestamp - game_start_offset
-    start_time = max(0, video_timestamp - before_seconds)
-    duration = before_seconds + after_seconds
+    timestamp_end = highlight.get('timestamp_end')  # 병합 이벤트인 경우
 
-    # 출력 파일명 생성
-    clip_filename = f"{highlight['type']}_{int(timestamp)}_{highlight['category']}.mp4"
+    if timestamp_end and timestamp_end > timestamp:
+        # 병합 이벤트: 첫 이벤트 전 before_seconds ~ 마지막 이벤트 후 after_seconds
+        video_start = timestamp - game_start_offset
+        video_end = timestamp_end - game_start_offset
+        start_time = max(0, video_start - before_seconds)
+        duration = (video_end - video_start) + before_seconds + after_seconds
+        clip_filename = f"{event_type}_{int(timestamp)}_to_{int(timestamp_end)}_{highlight['category']}.mp4"
+    else:
+        video_timestamp = timestamp - game_start_offset
+        start_time = max(0, video_timestamp - before_seconds)
+        duration = before_seconds + after_seconds
+        clip_filename = f"{event_type}_{int(timestamp)}_{highlight['category']}.mp4"
+
+    # clip_event_sec: 클립 내 첫 이벤트 발생 시점(Gemini 프롬프트용)
+    highlight['clip_event_sec'] = int((timestamp - game_start_offset) - start_time)
+
     output_path = os.path.join(output_dir, clip_filename)
 
     try:
@@ -212,9 +289,7 @@ def create_clip(
             .run(quiet=True)
         )
 
-        print(f"[INFO] Created clip: {output_path}")
-        # Gemini 프롬프트용: 클립 내 이벤트 발생 시점(초) = 영상 내 위치 - 시작점
-        highlight['clip_event_sec'] = int(video_timestamp - start_time)
+        print(f"[INFO] Created clip: {output_path} (duration={duration:.1f}s)")
         return output_path
 
     except ffmpeg.Error as e:

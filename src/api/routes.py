@@ -730,7 +730,8 @@ async def generate_highlights(
         from src.api.highlight_extractor import (
             extract_highlights_from_timeline,
             create_clip,
-            get_top_highlights
+            get_top_highlights,
+            merge_nearby_highlights,
         )
         from src.api.impact_highlight_integration import (
             enrich_highlights_with_impact,
@@ -776,7 +777,8 @@ async def generate_highlights(
                 feature_cols
             )
 
-        # 6. 잘한 부분 / 못한 부분 분리
+        # 6. 인접 이벤트 병합 (더블킬/한타) 후 잘한 부분/못한 부분 분리
+        all_highlights = merge_nearby_highlights(all_highlights, merge_window=10.0)
         highlight_clips = get_top_highlights(all_highlights, top_n=top_highlights, category='highlight')
         mistake_clips = get_top_highlights(all_highlights, top_n=top_mistakes, category='mistake')
 
