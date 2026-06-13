@@ -218,6 +218,94 @@ def merge_nearby_highlights(highlights: List[Dict], merge_window: float = 10.0) 
     return merged
 
 
+def merge_overlapping_events(highlights: List[Dict], overlap_threshold: float = 0.5) -> List[Dict]:
+    """
+    highlight(킬)와 mistake(데스) 클립 구간이 겹치면 gold_delta 기준으로 하나로 합친다.
+
+    킬 직후 죽거나, 팀파이트 안에서 킬+데스가 같은 영상에 담길 때
+    두 클립이 중복 생성되는 문제를 방지한다.
+
+    병합 규칙:
+      - 클립 구간 오버랩 비율 >= overlap_threshold (기본 50%)
+      - net_gold_delta >= 0  →  highlight (킬이 이득)
+      - net_gold_delta <  0  →  mistake   (교환했지만 손해)
+      - type = 'trade'로 설정해 Gemini 프롬프트가 복합 상황임을 인지
+
+    Args:
+        highlights: merge_nearby_highlights 이후의 전체 이벤트 리스트 (highlight + mistake 혼재)
+        overlap_threshold: 클립 구간 오버랩 비율 기준 (0~1)
+
+    Returns:
+        병합된 이벤트 리스트
+    """
+    def _clip_window(h: Dict):
+        ts     = h['timestamp']
+        ts_end = h.get('timestamp_end', ts)
+        t      = h.get('type', 'kill')
+        before = 20 if t == 'death' else 10
+        after  = 10 if t == 'death' else 15
+        return (ts - before, ts_end + after)
+
+    def _overlap_ratio(a, b) -> float:
+        start = max(a[0], b[0])
+        end   = min(a[1], b[1])
+        if end <= start:
+            return 0.0
+        overlap = end - start
+        shorter = min(a[1] - a[0], b[1] - b[0])
+        return overlap / shorter if shorter > 0 else 0.0
+
+    hl = [h for h in highlights if h.get('category') == 'highlight']
+    ms = [h for h in highlights if h.get('category') == 'mistake']
+
+    used_hl: set = set()
+    used_ms: set = set()
+    combined: List[Dict] = []
+
+    for i, h in enumerate(hl):
+        for j, m in enumerate(ms):
+            if i in used_hl or j in used_ms:
+                continue
+            if _overlap_ratio(_clip_window(h), _clip_window(m)) < overlap_threshold:
+                continue
+
+            # 교전 구간: 두 이벤트의 타임스탬프 전체를 커버
+            all_ts  = [h['timestamp'], h.get('timestamp_end', h['timestamp']),
+                       m['timestamp'], m.get('timestamp_end', m['timestamp'])]
+            ts_min  = min(all_ts)
+            ts_max  = max(all_ts)
+
+            h_gold  = h.get('gold_delta', 0)
+            m_gold  = m.get('gold_delta', 0)
+            net     = h_gold - abs(m_gold)   # 양수 = 킬이 더 이득
+
+            base    = h if net >= 0 else m
+            ev      = base.copy()
+            ev['timestamp']     = ts_min
+            ev['timestamp_end'] = ts_max if ts_max > ts_min else ts_min
+            ev['type']          = 'trade'
+            ev['category']      = 'highlight' if net >= 0 else 'mistake'
+            ev['has_kill']      = True
+            ev['has_death']     = True
+            ev['net_gold_delta'] = net
+            ev['importance']    = max(
+                h.get('combined_importance', h.get('importance', 0)),
+                m.get('combined_importance', m.get('importance', 0))
+            )
+            ev['description']   = (
+                f"킬+데스 교환 ({ts_min/60:.1f}분, net {'+' if net>=0 else ''}{net:.0f}G)"
+            )
+
+            combined.append(ev)
+            used_hl.add(i)
+            used_ms.add(j)
+
+    result  = [h for i, h in enumerate(hl) if i not in used_hl]
+    result += [m for j, m in enumerate(ms) if j not in used_ms]
+    result += combined
+    return result
+
+
 def create_clip(
     video_path: str,
     highlight: Dict,

@@ -732,6 +732,7 @@ async def generate_highlights(
             create_clip,
             get_top_highlights,
             merge_nearby_highlights,
+            merge_overlapping_events,
         )
         from src.api.impact_highlight_integration import (
             enrich_highlights_with_impact,
@@ -779,6 +780,7 @@ async def generate_highlights(
 
         # 6. 인접 이벤트 병합 (더블킬/한타) 후 잘한 부분/못한 부분 분리
         all_highlights = merge_nearby_highlights(all_highlights, merge_window=10.0)
+        all_highlights = merge_overlapping_events(all_highlights, overlap_threshold=0.5)
         highlight_clips = get_top_highlights(all_highlights, top_n=top_highlights, category='highlight')
         mistake_clips = get_top_highlights(all_highlights, top_n=top_mistakes, category='mistake')
 
@@ -881,6 +883,7 @@ async def generate_highlights(
                     enemy_champions=clip_enemy_champions,
                     lane_opponent=clip_lane_opponent,
                     event_sec_in_clip=h.get("clip_event_sec"),
+                    category=h.get("category", "highlight"),
                 )
             except Exception as e:
                 print(f"[WARN] Coaching task failed: {e}")

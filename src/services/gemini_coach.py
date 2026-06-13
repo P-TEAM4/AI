@@ -569,6 +569,7 @@ def analyze_clip(
     enemy_champions: Optional[list[str]] = None,
     event_sec_in_clip: Optional[int] = None,  # 클립 내 이벤트 발생 시점(초)
     lane_opponent: Optional[str] = None,       # 직접 상대 라이너 챔피언
+    category: str = "highlight",               # "highlight" | "mistake"
 ) -> Optional[str]:
     """
     15초 클립 영상 + 게임 상황을 Gemini Vision에 전달해 플레이 피드백을 반환합니다.
@@ -582,7 +583,7 @@ def analyze_clip(
         log.warning("Clip file not found: %s", clip_path)
         return None
 
-    kind_map = {"kill": "킬", "death": "데스", "objective": "오브젝트 획득"}
+    kind_map = {"kill": "킬", "death": "데스", "objective": "오브젝트 획득", "trade": "킬+데스 교환"}
     kind_str = kind_map.get(event_kind, event_kind)
     gold_diff_str = _fmt_gold(pre_gold_diff)
     snowball_str  = _fmt_gold(snowball_gold)
@@ -601,7 +602,19 @@ def analyze_clip(
     else:
         opponent_text = lane_opponent if lane_opponent else "영상에서 직접 확인"
 
-    if event_kind == "kill":
+    if event_kind == "trade":
+        is_net_positive = category == "highlight"
+        post_check = (
+            "이벤트 전체 구간: 킬을 따고 죽은 맞교환 상황입니다. "
+            f"골드 변화({snowball_str})를 기준으로 이 교환이 {'이득이었던 이유' if is_net_positive else '손해였던 이유'}를 분석하세요. "
+            "킬을 따는 과정, 그리고 이후 죽게 된 결정을 각각 평가하세요."
+        )
+        snowball_hint = (
+            f"이 교환의 순 골드 변화는 {snowball_str}입니다. "
+            f"{'킬 바운티가 데스 손실보다 컸지만' if is_net_positive else '킬을 땄음에도 데스 손실이 더 커서'} "
+            f"{'최선의 교환이었는지, 아니면 죽지 않고 킬만 딸 수 있었는지 평가하세요.' if is_net_positive else '결과적으로 손해인 교전입니다. 죽지 않을 수 있었던 시점을 찾아내세요.'}"
+        )
+    elif event_kind == "kill":
         post_check = (
             "이벤트 직후: 킬로 얻은 시간을 웨이브 푸시, 오브젝트, 타워 채굴 등 "
             "실질 이득으로 연결했는지 확인하세요. 킬만 따고 아무것도 챙기지 않고 "
@@ -624,7 +637,48 @@ def analyze_clip(
 
     event_anchor = f"클립의 약 {event_sec_in_clip}초 시점" if event_sec_in_clip is not None else "클립 중간 시점"
 
-    prompt = f"""당신은 프로팀에서 VOD 리뷰를 진행하는 리그 오브 레전드 전문 코치입니다. 이 클립은 플레이어({champion})의 {kind_str} 장면입니다. 프로팀 피드백 세션처럼 날카롭고 구체적으로, 그러나 실행 가능하게 분석하세요.
+    is_trade     = event_kind == "trade"
+    is_highlight = category == "highlight"
+
+    if is_trade:
+        net_label = "이득인 교환" if is_highlight else "손해인 교환"
+        tone_intro = (
+            f"이 클립은 플레이어({champion})가 킬을 따고 죽은 맞교환 장면입니다({net_label}). "
+            "킬을 딴 결정과 이후 죽게 된 결정을 각각 평가하고, "
+            f"{'교환 자체는 이득이지만 죽지 않을 수 있었는지' if is_highlight else '킬을 땄음에도 결국 손해인 이유'}를 분석하세요."
+        )
+        output_format = (
+            "**킬 평가:** (킬을 딴 결정이 좋았던/나빴던 이유 — 클립 시점 포함)\n"
+            "**데스 원인:** (킬 이후 죽게 된 핵심 결정 + 클립 내 시점)\n"
+            f"**교환 평가:** (순 골드 변화 {snowball_str} 기준으로 이 교환이 {'최선이었는지, 더 잘할 수 있었는지' if is_highlight else '왜 손해인지, 어떻게 피할 수 있었는지'})\n"
+            "**연습 포인트:** (이 장면에서 뽑아낼 수 있는, 다음 게임에 일반화 가능한 원칙 1가지)"
+        )
+    elif is_highlight:
+        tone_intro = (
+            f"이 클립은 플레이어({champion})의 좋은 플레이({kind_str}) 장면입니다. "
+            "잘한 결정을 먼저 인정하고, 그 위에서 더 발전할 수 있는 포인트를 덧붙이세요. "
+            "긍정적 강화가 주된 톤이어야 합니다."
+        )
+        output_format = (
+            "**잘한 점:** (킬/교전에서 실제로 잘한 결정 1가지 — 클립 시점 포함)\n"
+            "**결정적 판단:** (이 장면의 핵심 결정 + 클립 내 시점)\n"
+            "**판단 분석:** (그 결정이 효과적이었던 이유 — 시야·타이밍·포지션 중 무엇이 맞았는지)\n"
+            "**발전 포인트:** (같은 상황에서 이득을 더 극대화할 수 있었던 한 가지 — 후속 웨이브·오브젝트·포지션)\n"
+            "**연습 포인트:** (이 장면에서 뽑아낼 수 있는, 다음 게임에 일반화 가능한 원칙 1가지)"
+        )
+    else:
+        tone_intro = (
+            f"이 클립은 플레이어({champion})의 실수({kind_str}) 장면입니다. "
+            "날카롭고 구체적으로, 그러나 실행 가능하게 분석하세요."
+        )
+        output_format = (
+            "**결정적 판단:** (이 장면의 결과를 만든 핵심 결정 1가지 + 클립 내 시점)\n"
+            "**판단 분석:** (그 결정이 나빴던 이유 — 시야·체력·스킬·인원수·골드 상황 중 무엇을 놓쳤는지)\n"
+            "**대안 플레이:** (같은 상황에서 정확히 어떻게 움직였어야 했는지 — 서 있을 위치, 아껴야 할 스킬, 진입/이탈 타이밍)\n"
+            "**연습 포인트:** (이 장면에서 뽑아낼 수 있는, 다음 게임에 일반화 가능한 원칙 1가지)"
+        )
+
+    prompt = f"""당신은 프로팀에서 VOD 리뷰를 진행하는 리그 오브 레전드 전문 코치입니다. {tone_intro}
 
 [상황 정보]
 - 플레이어 챔피언: {champion} ({role}) / 소환사 주문: {spell1_name} / {spell2_name}
@@ -642,18 +696,15 @@ def analyze_clip(
 3. {post_check}
 
 [분석 원칙]
-- 데스는 죽는 순간이 아니라 그 몇 초 전 결정에서 시작됩니다. 결과가 사실상 확정된 "최초의 결정"이 클립의 몇 초 시점인지 찾아내 지목하세요.
-- 당시 골드차({gold_diff_str})와 스코어({pre_score})를 근거로, 이 교전이 애초에 시도할 가치가 있었는지 리스크 대비 리턴을 평가하세요. 불리한 상황의 무리한 교전과 유리한 상황의 소극적 플레이는 둘 다 지적 대상입니다.
+- 당시 골드차({gold_diff_str})와 스코어({pre_score})를 근거로, 이 교전의 리스크 대비 리턴을 평가하세요.
 - {snowball_hint}
-- 영상에서 직접 보이는 것만 근거로 사용하세요. 위에 명시된 챔피언과 소환사 주문만 언급하고, 화면에서 확인되지 않는 챔피언·스킬·아이템·쿨다운은 절대 추측하지 마세요.
+- 영상에서 직접 보이는 것만 근거로 사용하세요. 위에 명시된 챔피언과 소환사 주문만 언급하고, 화면에서 확인되지 않는 챔피언·아이템은 절대 추측하지 마세요.
+- 스킬 사용 여부는 ①스킬 이펙트·애니메이션이 화면에 명확히 보이거나, ②HUD 스킬 아이콘이 쿨다운 회색으로 변하는 것이 확인될 때만 언급하세요. 체력 감소·위치 변화·챔피언 모션만으로 어떤 스킬을 사용했는지 추측해서 단정하면 안 됩니다.
 - "포지셔닝이 아쉽다" 같은 추상적 표현 금지. "클립 4초경 시야 없는 강 부쉬 옆으로 붙어 이동했다"처럼 화면에 보이는 행동을 직접 서술하세요.
 
-아래 형식으로 정확히 답하세요. 각 항목은 1~2문장이며, 장면을 언급할 때는 "클립 X초경" 형태로 시점을 지목하세요.
+아래 형식으로 정확히 답하세요. 각 항목은 1~2문장이며, 장면을 언급할 때는 "클립 X초경" 형태로 시점을 지목하세요. 헤더는 반드시 **굵게** 표시하고 콜론으로 끝내세요.
 
-결정적 판단: (이 장면의 결과를 만든 핵심 결정 1가지 + 클립 내 시점)
-판단 분석: (그 결정이 좋았던/나빴던 이유 — 시야·체력·스킬·인원수·골드 상황 중 어떤 정보에 근거했거나 무엇을 놓쳤는지)
-대안 플레이: (같은 상황에서 정확히 어떻게 움직였어야 했는지 — 서 있을 위치, 아껴야 할 스킬, 진입/이탈 타이밍 단위로)
-연습 포인트: (이 장면에서 뽑아낼 수 있는, 다음 게임에 일반화 가능한 원칙 1가지)"""
+{output_format}"""
 
     file_uri = _upload_video_file(clip_path)
     if not file_uri:
@@ -708,6 +759,7 @@ async def analyze_clip_async(
     enemy_champions: Optional[list[str]] = None,
     event_sec_in_clip: Optional[int] = None,
     lane_opponent: Optional[str] = None,
+    category: str = "highlight",
 ) -> Optional[str]:
     """analyze_clip의 비동기 래퍼 — asyncio.to_thread로 스레드풀에서 실행"""
     return await asyncio.to_thread(
@@ -716,5 +768,5 @@ async def analyze_clip_async(
         pre_gold_diff, snowball_gold, snowball_label,
         champion, role,
         summoner_spells, ally_champions, enemy_champions,
-        event_sec_in_clip, lane_opponent,
+        event_sec_in_clip, lane_opponent, category,
     )
