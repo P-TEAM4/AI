@@ -282,3 +282,5 @@ visualization_results/
 # Generated clips and uploaded videos
 clips/
 uploads/
+.omc/
+.claude/
